@@ -27,7 +27,7 @@
       "binding": "HYPERDRIVE_FRESH",
       // Replace this with a Hyperdrive configuration created using
       // `wrangler hyperdrive create ... --caching-disabled`.
-      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+      "id": "929f4511e5e448c7bf044e662fb52a9b",
     },
   ],
   "durable_objects": {
