@@ -1,0 +1,56 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "leetbattle-web",
+  "main": ".open-next/worker.js",
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS",
+  },
+  "routes": [
+    {
+      "pattern": "leetbattle.cenough.games",
+      "custom_domain": true,
+    },
+  ],
+  "placement": {
+    "mode": "smart",
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE_FRESH",
+      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+      "localConnectionString": "postgresql://leetbattle:leetbattle@127.0.0.1:5432/leetbattle",
+    },
+  ],
+  "services": [
+    {
+      "binding": "RUNNER_SERVICE",
+      "service": "leetbattle-runner",
+    },
+    {
+      "binding": "REALTIME_SERVICE",
+      "service": "leetbattle-realtime",
+    },
+  ],
+  "vars": {
+    "APP_ORIGIN": "https://leetbattle.cenough.games",
+  },
+  "secrets": {
+    "required": [
+      "CLERK_SECRET_KEY",
+      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+      "REALTIME_TICKET_SECRET",
+      "RUNNER_INTERNAL_SECRET",
+      "ROOM_INVITE_SECRET",
+      "REALTIME_NOTIFY_SECRET",
+    ],
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+}

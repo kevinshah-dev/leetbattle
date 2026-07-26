@@ -1,0 +1,3 @@
+# Copy to .dev.vars for local Wrangler development. This value must match the
+# web Worker's development runner secret.
+RUNNER_INTERNAL_SECRET=replace_with_a_different_32_byte_secret

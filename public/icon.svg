@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">LeetBattle circuit bolt</title>
+  <rect width="64" height="64" fill="#070B12"/>
+  <path fill="#F4A62A" d="M10 8h20v8H18v12h-8V8Zm24 0h20v20h-8V16H34V8ZM10 36h8v12h12v8H10V36Zm36 0h8v20H34v-8h12V36Z"/>
+  <path fill="#35D3C7" d="M34 17 21 34h10l-2 13 14-19H33l1-11Z"/>
+</svg>

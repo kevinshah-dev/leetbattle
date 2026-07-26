@@ -1,0 +1,61 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "leetbattle-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "ws.leetbattle.cenough.games",
+      "custom_domain": true,
+    },
+  ],
+  "vars": {
+    "APP_ORIGIN": "https://leetbattle.cenough.games",
+  },
+  "secrets": {
+    "required": [
+      "REALTIME_TICKET_SECRET",
+      "ROOM_INVITE_SECRET",
+      "REALTIME_NOTIFY_SECRET",
+    ],
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE_FRESH",
+      // Replace this with a Hyperdrive configuration created using
+      // `wrangler hyperdrive create ... --caching-disabled`.
+      "id": "REPLACE_WITH_HYPERDRIVE_ID",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOM_HUB",
+        "class_name": "RoomHub",
+      },
+    ],
+  },
+  "exports": {
+    "RoomHub": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05,
+    },
+  },
+}

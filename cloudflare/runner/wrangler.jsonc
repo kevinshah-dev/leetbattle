@@ -1,0 +1,53 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "leetbattle-runner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc",
+  },
+  "secrets": {
+    "required": ["RUNNER_INTERNAL_SECRET"],
+  },
+  "containers": [
+    {
+      "class_name": "JudgeSandbox",
+      "image": "./Dockerfile",
+      // Nested rootless Docker and the pinned Python/Java judge rootfs require
+      // the one-vCPU, six-GiB container class. Per-job cgroups are stricter.
+      "instance_type": "standard-2",
+      "max_instances": 10,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "JUDGE_SANDBOX",
+        "class_name": "JudgeSandbox",
+      },
+    ],
+  },
+  "exports": {
+    "JudgeSandbox": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": true,
+    },
+  },
+}

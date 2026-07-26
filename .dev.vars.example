@@ -1,0 +1,9 @@
+# Copy to .dev.vars for Wrangler/OpenNext preview only. Keep real values out of
+# version control. Next's build step still needs the two Clerk variables in the
+# shell or an ignored .env.local file.
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_replace_me
+CLERK_SECRET_KEY=sk_test_replace_me
+REALTIME_TICKET_SECRET=replace_with_at_least_32_random_bytes
+RUNNER_INTERNAL_SECRET=replace_with_a_different_32_byte_secret
+ROOM_INVITE_SECRET=replace_with_a_third_32_byte_secret
+REALTIME_NOTIFY_SECRET=replace_with_a_fourth_32_byte_secret

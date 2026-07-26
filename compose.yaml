@@ -1,0 +1,139 @@
+name: leetbattle
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: leetbattle
+      POSTGRES_USER: leetbattle
+      POSTGRES_PASSWORD: leetbattle
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leetbattle -d leetbattle"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - leetbattle-postgres:/var/lib/postgresql
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+        NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-ws://localhost:3001}
+    command: ["npm", "run", "db:migrate"]
+    environment:
+      DATABASE_URL: postgresql://leetbattle:leetbattle@postgres:5432/leetbattle
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+        NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-ws://localhost:3001}
+    command: ["npm", "run", "db:seed"]
+    environment:
+      DATABASE_URL: postgresql://leetbattle:leetbattle@postgres:5432/leetbattle
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner-service
+    environment:
+      RUNNER_PORT: ${RUNNER_PORT:-3002}
+      RUNNER_INTERNAL_SECRET: ${RUNNER_INTERNAL_SECRET:?RUNNER_INTERNAL_SECRET is required}
+      PYTHON_RUNNER_IMAGE: ${PYTHON_RUNNER_IMAGE:-leetbattle-python-runner:3.13}
+      JAVA_RUNNER_IMAGE: ${JAVA_RUNNER_IMAGE:-leetbattle-java-runner:21}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:'' + process.env.RUNNER_PORT + ''/health'').then(response => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))" && docker info >/dev/null 2>&1 && docker image inspect "$$PYTHON_RUNNER_IMAGE" "$$JAVA_RUNNER_IMAGE" >/dev/null 2>&1',
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 5s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  realtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+        NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-ws://localhost:3001}
+    command: ["npm", "run", "start:realtime"]
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: postgresql://leetbattle:leetbattle@postgres:5432/leetbattle
+      REALTIME_PORT: ${REALTIME_PORT:-3001}
+      REALTIME_TICKET_SECRET: ${REALTIME_TICKET_SECRET:?REALTIME_TICKET_SECRET is required}
+      ROOM_INVITE_SECRET: ${ROOM_INVITE_SECRET:?ROOM_INVITE_SECRET is required}
+      RUNNER_INTERNAL_SECRET: ${RUNNER_INTERNAL_SECRET:?RUNNER_INTERNAL_SECRET is required}
+      RUNNER_URL: "http://runner:${RUNNER_PORT:-3002}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + process.env.REALTIME_PORT + '/healthz').then(response => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 5s
+    ports:
+      - "${REALTIME_PORT:-3001}:${REALTIME_PORT:-3001}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      runner:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+        NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-ws://localhost:3001}
+    environment:
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
+      DATABASE_URL: postgresql://leetbattle:leetbattle@postgres:5432/leetbattle
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:?NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required}
+      NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-ws://localhost:3001}
+      REALTIME_TICKET_SECRET: ${REALTIME_TICKET_SECRET:?REALTIME_TICKET_SECRET is required}
+      ROOM_INVITE_SECRET: ${ROOM_INVITE_SECRET:?ROOM_INVITE_SECRET is required}
+      RUNNER_INTERNAL_SECRET: ${RUNNER_INTERNAL_SECRET:?RUNNER_INTERNAL_SECRET is required}
+      RUNNER_URL: "http://runner:${RUNNER_PORT:-3002}"
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+      runner:
+        condition: service_healthy
+      realtime:
+        condition: service_healthy
+
+volumes:
+  leetbattle-postgres:

@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+cp /submission/solution.py /workspace/solution.py
+cp /submission/harness.py /workspace/harness.py
+
+started="$(date +%s%3N)"
+if ! python3 -m py_compile /workspace/solution.py >/dev/null 2>&1; then
+  finished="$(date +%s%3N)"
+  elapsed="$((finished - started))"
+  printf '__LEETBATTLE_PROTOCOL__{"kind":"compile_error","compileMs":%s}\n' "$elapsed"
+  exit 0
+fi
+finished="$(date +%s%3N)"
+elapsed="$((finished - started))"
+export LEETBATTLE_COMPILE_MS="$elapsed"
+exec python3 -I /workspace/harness.py

@@ -1,0 +1,10 @@
+.next
+.open-next
+.wrangler
+.playwright-cli
+node_modules
+coverage
+output
+package-lock.json
+cloudflare-env.d.ts
+cloudflare/**/worker-configuration.d.ts

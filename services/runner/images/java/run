@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+cp /submission/Solution.java /workspace/Solution.java
+cp /submission/Harness.java /workspace/Harness.java
+
+started="$(date +%s%3N)"
+if ! javac -encoding UTF-8 -d /workspace /workspace/Solution.java /workspace/Harness.java >/dev/null 2>&1; then
+  finished="$(date +%s%3N)"
+  elapsed="$((finished - started))"
+  printf '__LEETBATTLE_PROTOCOL__{"kind":"compile_error","compileMs":%s}\n' "$elapsed"
+  exit 0
+fi
+finished="$(date +%s%3N)"
+elapsed="$((finished - started))"
+export LEETBATTLE_COMPILE_MS="$elapsed"
+exec java -XX:+ExitOnOutOfMemoryError -Xms16m -Xmx160m -XX:MaxMetaspaceSize=64m -Djava.io.tmpdir=/tmp -cp /workspace Harness

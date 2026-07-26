@@ -1,0 +1,90 @@
+# Dependencies and package-manager caches
+node_modules/
+.npm/
+.pnpm-store/
+
+# Environment files and local secrets
+.env*
+!.env.example
+!.env.*.example
+.dev.vars*
+!.dev.vars.example
+!.dev.vars.*.example
+.npmrc
+.netrc
+/.secrets/
+
+# Private keys and credential files
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials*.json
+*-credentials.json
+service-account*.json
+
+# Next.js, OpenNext, and deployment output
+.next/
+.open-next/
+out/
+build/
+dist/
+.vercel/
+.turbo/
+next-env.d.ts
+
+# Cloudflare local state
+.wrangler/
+
+# Tests and coverage
+.playwright-cli/
+coverage/
+.nyc_output/
+.vitest/
+output/
+test-results/
+playwright-report/
+blob-report/
+
+# Local databases and backups
+database-backups/
+*.dump
+*.backup
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Logs, caches, and temporary files
+*.log
+logs/
+*.pid
+*.pid.lock
+*.tsbuildinfo
+.eslintcache
+.cache/
+.tmp/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*~
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating-system metadata
+.DS_Store
+._*
+Thumbs.db

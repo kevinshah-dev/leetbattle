@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 126" role="img" aria-labelledby="title desc">
+  <title id="title">LeetBattle</title>
+  <desc id="desc">A block-letter LeetBattle wordmark split by a circuit bolt</desc>
+  <rect x="2" y="2" width="516" height="122" fill="#070B12" stroke="#EAF2E8" stroke-opacity=".16" stroke-width="4"/>
+  <g fill="#F4A62A">
+    <path d="M24 25h14v52h37v14H24zM88 25h55v14h-41v11h34v13h-34v14h41v14H88zM156 25h55v14h-41v11h34v13h-34v14h41v14h-55zM224 25h62v14h-24v52h-14V39h-24z"/>
+  </g>
+  <path fill="#35D3C7" d="m294 18-19 38h17l-9 51 34-60h-18l12-29z"/>
+  <g fill="#EAF2E8">
+    <path d="M325 25h43q17 0 17 16v6q0 8-7 11 9 4 9 14v3q0 16-18 16h-44zm15 13v14h25q5 0 5-5v-4q0-5-5-5zm0 26v14h26q6 0 6-5v-4q0-5-6-5zM404 25h48q15 0 15 15v51h-15V72h-33v19h-15zm15 14v20h33V44q0-5-5-5zM479 25h17v66h-17z"/>
+  </g>
+</svg>
