@@ -13,6 +13,40 @@ export interface ConnectionLifecycleOptions<
   readonly onDisconnectFailure?: () => void;
 }
 
+export interface GuardedRealtimeOperationOptions<Result> {
+  readonly isCurrent: () => boolean;
+  readonly operation: () => Promise<Result>;
+  readonly compensate: () => Promise<void>;
+}
+
+export type GuardedRealtimeOperationResult<Result> =
+  | { readonly completed: true; readonly result: Result }
+  | { readonly completed: false; readonly result: null };
+
+/**
+ * Prevents an awaited operation from publishing into a superseded socket
+ * generation. If the generation closes while I/O is in flight, compensation
+ * runs after success or failure so a late heartbeat cannot revive its session.
+ */
+export async function runGuardedRealtimeOperation<Result>(
+  options: GuardedRealtimeOperationOptions<Result>,
+): Promise<GuardedRealtimeOperationResult<Result>> {
+  if (!options.isCurrent()) return { completed: false, result: null };
+
+  let result: Result;
+  try {
+    result = await options.operation();
+  } catch (error) {
+    if (!options.isCurrent()) await options.compensate();
+    throw error;
+  }
+  if (!options.isCurrent()) {
+    await options.compensate();
+    return { completed: false, result: null };
+  }
+  return { completed: true, result };
+}
+
 /**
  * Couples asynchronous DB session creation to socket lifetime. A close that
  * wins the race rolls back the newly-created session before this resolves.

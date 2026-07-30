@@ -9,6 +9,7 @@ import type {
 } from "@/server/domain/types";
 import { MatchEngine } from "@/server/match/match-engine";
 import { RealtimeTicketService } from "@/server/realtime/tickets";
+import { REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS } from "@/server/realtime/timing";
 
 const problemCatalog: ProblemCatalog = Object.freeze({
   listByDifficulty(difficulty: Difficulty): readonly PublicProblemRef[] {
@@ -133,7 +134,9 @@ export async function nextMatchWakeAt(
 
       UNION ALL
 
-      SELECT last_seen_at + interval '45 seconds' AS deadline
+      SELECT last_seen_at
+        + (${REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS} * interval '1 second')
+        AS deadline
       FROM realtime_sessions
       WHERE match_id = ${matchId} AND disconnected_at IS NULL
 

@@ -4,7 +4,11 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { requireDistinctInternalSecrets } from "../../src/server/config/secrets";
 import { DomainError } from "../../src/server/domain/errors";
-import { refreshRealtimeSessionHeartbeat } from "../../src/server/realtime/heartbeat";
+import {
+  refreshRealtimeSessionHeartbeat,
+  type RealtimeHeartbeatResult,
+} from "../../src/server/realtime/heartbeat";
+import type { MatchSnapshot } from "../../src/server/domain/types";
 import {
   admitRealtimeCommand,
   emptyRealtimeCommandRateState,
@@ -12,7 +16,11 @@ import {
   type RealtimeCommandRateState,
 } from "../../src/server/realtime/limits";
 import { getServices } from "../../src/server/services";
-import { establishRealtimeSession } from "./connection-lifecycle";
+import { CoalescedTask } from "./coalesced-task";
+import {
+  establishRealtimeSession,
+  runGuardedRealtimeOperation,
+} from "./connection-lifecycle";
 import {
   parseClientCommand,
   type ClientCommand,
@@ -31,10 +39,15 @@ const clients = new Set<Client>();
 const connectionSetups = new Set<Promise<void>>();
 let shuttingDown = false;
 let maintenance: Promise<void> | null = null;
+let nextConnectionId = 0;
 const operationalErrorTimes = new Map<string, number>();
 
 interface Client {
   ws: WebSocket;
+  connectionId: number;
+  connectedAt: number;
+  generation: number;
+  closed: boolean;
   actorUserId: string;
   roomId: string;
   matchId: string;
@@ -43,13 +56,67 @@ interface Client {
   snapshotReady: boolean;
   queued: string[];
   commandChain: Promise<void>;
+  polls: CoalescedTask | null;
+  heartbeats: CoalescedTask | null;
   alive: boolean;
   rateState: RealtimeCommandRateState;
 }
 
-function send(client: Client, message: ServerMessage): void {
-  if (client.ws.readyState === WebSocket.OPEN)
+function isCurrentClient(client: Client, generation: number): boolean {
+  return (
+    !client.closed &&
+    client.generation === generation &&
+    clients.has(client) &&
+    client.ws.readyState === WebSocket.OPEN
+  );
+}
+
+function send(client: Client, message: ServerMessage): boolean {
+  if (!isCurrentClient(client, client.generation)) return false;
+  try {
     client.ws.send(JSON.stringify(message));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function logSocketEvent(
+  level: "info" | "warn" | "error",
+  event: string,
+  client: Client,
+  details: Record<string, unknown> = {},
+): void {
+  const entry = JSON.stringify({
+    event,
+    connectionId: client.connectionId,
+    generation: client.generation,
+    matchId: client.matchId,
+    sessionEstablished: client.sessionId.length > 0,
+    ...details,
+  });
+  if (level === "error") {
+    console.error(entry);
+  } else if (level === "warn") {
+    console.warn(entry);
+  } else {
+    console.info(entry);
+  }
+}
+
+function redactLogMessage(message: string): string {
+  return message
+    .replace(/([?&]ticket=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
+    .slice(0, 200);
+}
+
+function closeClientLifecycle(client: Client): void {
+  if (client.closed) return;
+  client.closed = true;
+  client.generation += 1;
+  client.polls?.stop();
+  client.heartbeats?.stop();
 }
 
 function reportOperationalFailure(operation: string): void {
@@ -57,7 +124,13 @@ function reportOperationalFailure(operation: string): void {
   const previous = operationalErrorTimes.get(operation) ?? 0;
   if (now - previous < 10_000) return;
   operationalErrorTimes.set(operation, now);
-  console.error(`LeetBattle realtime ${operation} failed; it will retry`);
+  console.error(
+    JSON.stringify({
+      event: "realtime.operation.failed",
+      operation,
+      retrying: true,
+    }),
+  );
 }
 
 function rejectUpgrade(
@@ -147,6 +220,7 @@ httpServer.on("upgrade", (request, socket, head) => {
         return rejectUpgrade(socket, 503, "Server is shutting down");
       const activeSocketCount = [...clients].filter(
         (client) =>
+          !client.closed &&
           client.actorUserId === claims.userId &&
           client.matchId === claims.matchId &&
           client.ws.readyState === WebSocket.OPEN,
@@ -175,6 +249,10 @@ async function acceptConnection(
   if (ws.readyState !== WebSocket.OPEN) return;
   const client: Client = {
     ws,
+    connectionId: (nextConnectionId += 1),
+    connectedAt: Date.now(),
+    generation: 1,
+    closed: false,
     actorUserId: claims.userId,
     roomId: claims.roomId,
     matchId: claims.matchId,
@@ -183,19 +261,30 @@ async function acceptConnection(
     snapshotReady: false,
     queued: [],
     commandChain: Promise.resolve(),
+    polls: null,
+    heartbeats: null,
     alive: true,
     rateState: emptyRealtimeCommandRateState(),
   };
+  client.polls = new CoalescedTask(
+    () => pollClient(client, client.generation),
+    { trailing: true },
+  );
+  client.heartbeats = new CoalescedTask(() =>
+    refreshClientHeartbeat(client, client.generation),
+  );
   clients.add(client);
   ws.on("pong", () => {
+    if (!isCurrentClient(client, client.generation)) return;
     client.alive = true;
     if (client.sessionId) {
-      client.commandChain = client.commandChain
-        .then(() => refreshClientHeartbeat(client))
-        .catch(() => reportOperationalFailure("session heartbeat"));
+      void requestClientHeartbeat(client).catch(() =>
+        reportOperationalFailure("session heartbeat"),
+      );
     }
   });
   ws.on("message", (data, binary) => {
+    if (!isCurrentClient(client, client.generation)) return;
     if (binary) return ws.close(1003, "Text commands only");
     const raw = data.toString();
     if (!client.snapshotReady) {
@@ -206,12 +295,25 @@ async function acceptConnection(
     }
     enqueueCommand(client, raw);
   });
-  ws.once("error", () => undefined);
+  ws.once("error", (error) => {
+    logSocketEvent("error", "realtime.socket.transport_error", client, {
+      errorName: error.name,
+      errorMessage: redactLogMessage(error.message),
+    });
+  });
 
   const status = await establishRealtimeSession({
     isOpen: () => ws.readyState === WebSocket.OPEN,
     subscribeToClose: (listener) => {
-      ws.once("close", () => {
+      ws.once("close", (code, reason) => {
+        logSocketEvent("info", "realtime.socket.closed", client, {
+          code,
+          reasonBytes: reason.byteLength,
+          lifetimeMs: Date.now() - client.connectedAt,
+          pollInFlight: Boolean(client.polls?.pending),
+          heartbeatInFlight: Boolean(client.heartbeats?.pending),
+        });
+        closeClientLifecycle(client);
         clients.delete(client);
         listener();
       });
@@ -234,7 +336,10 @@ async function acceptConnection(
         enqueueCommand(client, queued);
     },
   });
-  if (status === "CLOSED") clients.delete(client);
+  if (status === "CLOSED") {
+    closeClientLifecycle(client);
+    clients.delete(client);
+  }
 }
 
 function enqueueCommand(client: Client, raw: string): void {
@@ -274,7 +379,7 @@ async function handleCommand(client: Client, raw: string): Promise<void> {
     let data: unknown;
     switch (command.type) {
       case "PING":
-        await refreshClientHeartbeat(client);
+        await requestClientHeartbeat(client);
         send(client, {
           type: "PONG",
           serverTimestamp: new Date().toISOString(),
@@ -350,7 +455,7 @@ async function handleCommand(client: Client, raw: string): Promise<void> {
       command: command.type,
       data: playerSafeAcknowledgement(data),
     });
-    await pollClient(client);
+    await requestClientPoll(client);
   } catch (error) {
     const domain = error instanceof DomainError ? error : null;
     send(client, {
@@ -363,27 +468,76 @@ async function handleCommand(client: Client, raw: string): Promise<void> {
   }
 }
 
-async function refreshClientHeartbeat(client: Client): Promise<void> {
-  const result = await refreshRealtimeSessionHeartbeat(services.matches, {
-    actorUserId: client.actorUserId,
-    roomId: client.roomId,
-    matchId: client.matchId,
-    sessionId: client.sessionId,
+function requestClientHeartbeat(client: Client): Promise<void> {
+  if (
+    !client.sessionId ||
+    !isCurrentClient(client, client.generation) ||
+    !client.heartbeats
+  ) {
+    return Promise.resolve();
+  }
+  return client.heartbeats.request();
+}
+
+async function compensateClosedHeartbeat(
+  sessionId: string,
+  actorUserId: string,
+): Promise<void> {
+  try {
+    await services.matches.disconnectSession(sessionId, actorUserId);
+  } catch {
+    reportOperationalFailure("closed heartbeat compensation");
+  }
+}
+
+async function refreshClientHeartbeat(
+  client: Client,
+  generation: number,
+): Promise<void> {
+  if (!isCurrentClient(client, generation) || !client.sessionId) return;
+
+  const sessionId = client.sessionId;
+  const guarded = await runGuardedRealtimeOperation<
+    RealtimeHeartbeatResult<MatchSnapshot>
+  >({
+    isCurrent: () => isCurrentClient(client, generation),
+    operation: () =>
+      refreshRealtimeSessionHeartbeat(services.matches, {
+        actorUserId: client.actorUserId,
+        roomId: client.roomId,
+        matchId: client.matchId,
+        sessionId,
+      }),
+    compensate: () => compensateClosedHeartbeat(sessionId, client.actorUserId),
   });
+  if (!guarded.completed || !isCurrentClient(client, generation)) return;
+  const result = guarded.result;
   if (!result.reactivated) return;
 
   client.cursor = result.snapshot.version;
   send(client, { type: "SNAPSHOT", snapshot: result.snapshot });
 }
 
-async function pollClient(client: Client): Promise<void> {
-  if (!client.snapshotReady || client.ws.readyState !== WebSocket.OPEN) return;
+function requestClientPoll(client: Client): Promise<void> {
+  if (
+    !client.snapshotReady ||
+    !isCurrentClient(client, client.generation) ||
+    !client.polls
+  ) {
+    return Promise.resolve();
+  }
+  return client.polls.request();
+}
+
+async function pollClient(client: Client, generation: number): Promise<void> {
+  if (!client.snapshotReady || !isCurrentClient(client, generation)) return;
   const events = await services.matches.eventsSince(
     client.actorUserId,
     client.matchId,
     client.cursor,
     100,
   );
+  if (!isCurrentClient(client, generation)) return;
   for (const event of events) {
     if (event.version <= client.cursor) continue;
     send(client, { type: "EVENT", event });
@@ -392,18 +546,34 @@ async function pollClient(client: Client): Promise<void> {
 }
 
 const eventPoll = setInterval(() => {
-  for (const client of clients) void pollClient(client).catch(() => undefined);
+  for (const client of clients) {
+    void requestClientPoll(client).catch(() =>
+      reportOperationalFailure("event poll"),
+    );
+  }
 }, 250);
 eventPoll.unref();
 
 const heartbeat = setInterval(() => {
   for (const client of clients) {
+    if (!isCurrentClient(client, client.generation)) continue;
     if (!client.alive) {
+      logSocketEvent("warn", "realtime.socket.heartbeat_timeout", client, {
+        timeoutMs: 15_000,
+      });
       client.ws.terminate();
       continue;
     }
     client.alive = false;
-    client.ws.ping();
+    try {
+      client.ws.ping();
+    } catch (error) {
+      logSocketEvent("error", "realtime.socket.ping_failed", client, {
+        errorMessage:
+          error instanceof Error ? redactLogMessage(error.message) : "unknown",
+      });
+      client.ws.terminate();
+    }
   }
 }, 15_000);
 heartbeat.unref();
@@ -439,6 +609,13 @@ async function shutdown(): Promise<void> {
     client.ws.close(1001, "Server restarting");
   await Promise.allSettled([...connectionSetups]);
   await Promise.allSettled(activeClients.map((client) => client.commandChain));
+  await Promise.allSettled(
+    activeClients.flatMap((client) =>
+      [client.polls?.pending, client.heartbeats?.pending].filter(
+        (task): task is Promise<void> => task !== null && task !== undefined,
+      ),
+    ),
+  );
   await Promise.allSettled(
     activeClients.flatMap((client) =>
       client.sessionId

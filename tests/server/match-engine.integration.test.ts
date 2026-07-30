@@ -761,6 +761,40 @@ integration("PostgreSQL authoritative match engine", () => {
     expect(completion.winnerUserId).toBe("host");
   });
 
+  it("keeps presence live while a replacement socket overlaps an older session", async () => {
+    const { matchId, roomId, hostSession } = await activeMatch();
+    const before = await engine.getSnapshotByMatch("host", matchId);
+    const replacement = await engine.connectSession({
+      actorUserId: "host",
+      roomId,
+      matchId,
+    });
+
+    await engine.disconnectSession(hostSession.sessionId, "host");
+    const duringHandoff = await engine.getSnapshotByMatch("host", matchId);
+    expect(
+      duringHandoff.players.find((player) => player.isSelf)?.connected,
+    ).toBe(true);
+    const handoffEvents = await engine.eventsSince(
+      "host",
+      matchId,
+      before.version,
+    );
+    expect(
+      handoffEvents.some(
+        (event) =>
+          event.type === "CONNECTION_CHANGED" &&
+          event.payload.connected === false,
+      ),
+    ).toBe(false);
+
+    await engine.disconnectSession(replacement.sessionId, "host");
+    const disconnected = await engine.getSnapshotByMatch("host", matchId);
+    expect(
+      disconnected.players.find((player) => player.isSelf)?.connected,
+    ).toBe(false);
+  });
+
   it("records double disconnect as no-contest without changing records", async () => {
     const { matchId, hostSession, opponentSession } = await activeMatch();
     await engine.disconnectSession(hostSession.sessionId, "host");

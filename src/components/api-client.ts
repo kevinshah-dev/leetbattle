@@ -254,11 +254,12 @@ export function getHistory(signal?: AbortSignal) {
   );
 }
 
-export function getRealtimeToken(roomCode: string) {
-  return request<{ token: string }>(
+export function getRealtimeToken(roomCode: string, signal?: AbortSignal) {
+  return request<{ token: string; expiresAt: string }>(
     `/api/rooms/${encodeURIComponent(roomCode)}/realtime-token`,
     {
       method: "POST",
+      signal,
     },
   );
 }

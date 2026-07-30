@@ -8,6 +8,7 @@ import {
   hasReachedRealtimeSocketCap,
   readRealtimeCommandRateState,
 } from "@/server/realtime/limits";
+import { REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS } from "@/server/realtime/timing";
 import {
   parseClientCommand,
   type ServerMessage,
@@ -18,6 +19,7 @@ import {
   nextMatchWakeAt,
   runGlobalMaintenance,
   withRealtimeRuntime,
+  type RealtimeRuntime,
 } from "./runtime";
 import {
   hasValidNotifySecret,
@@ -46,6 +48,9 @@ interface SocketAttachment {
   commandNotBefore: number;
   pingNotBefore: number;
   snapshotNotBefore: number;
+  lastClientActivityAt: number;
+  operationId: number;
+  disconnectHandled: boolean;
 }
 
 interface NotificationResult {
@@ -97,8 +102,22 @@ function logFailure(event: string, error: unknown, details = {}): void {
   );
 }
 
+function logEvent(event: string, details = {}): void {
+  console.log(JSON.stringify({ event, ...details }));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function safeNonNegativeInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function nextOperationId(current: number): number {
+  return current >= Number.MAX_SAFE_INTEGER ? 1 : current + 1;
 }
 
 function readAttachment(socket: WebSocket): SocketAttachment | null {
@@ -127,7 +146,28 @@ function readAttachment(socket: WebSocket): SocketAttachment | null {
     slot: value.slot,
     cursor: value.cursor,
     ...readRealtimeCommandRateState(value),
+    lastClientActivityAt: safeNonNegativeInteger(
+      value.lastClientActivityAt,
+      Date.now(),
+    ),
+    operationId: safeNonNegativeInteger(value.operationId, 0),
+    disconnectHandled: value.disconnectHandled === true,
   };
+}
+
+function isCurrentSocketOperation(
+  socket: WebSocket,
+  sessionId: string,
+  operationId: number,
+): boolean {
+  if (socket.readyState !== WebSocket.OPEN) return false;
+  const current = readAttachment(socket);
+  return Boolean(
+    current &&
+    !current.disconnectHandled &&
+    current.sessionId === sessionId &&
+    current.operationId === operationId,
+  );
 }
 
 function sendMessage(socket: WebSocket, message: ServerMessage): boolean {
@@ -346,6 +386,9 @@ export class RoomHub extends DurableObject<Env> {
               slot: claims.slot,
               cursor: connected.snapshot.version,
               ...emptyRealtimeCommandRateState(),
+              lastClientActivityAt: Date.now(),
+              operationId: 0,
+              disconnectHandled: false,
             };
             serverSocket.serializeAttachment(attachment);
             if (
@@ -357,7 +400,26 @@ export class RoomHub extends DurableObject<Env> {
               throw new Error("Socket closed during realtime setup");
             }
 
-            await this.scheduleAt(await nextMatchWakeAt(db, verifiedMatchId));
+            try {
+              await this.scheduleAt(await nextMatchWakeAt(db, verifiedMatchId));
+            } catch (scheduleError) {
+              logFailure(
+                "realtime.socket.initial_schedule_failed",
+                scheduleError,
+                { matchId: verifiedMatchId },
+              );
+            }
+            const connectedSockets = this.broadcastInvalidation(
+              verifiedMatchId,
+              "presence-changed",
+              connected.snapshot.version,
+            );
+            logEvent("realtime.socket.connected", {
+              matchId: verifiedMatchId,
+              slot: claims.slot,
+              connectedSockets,
+              leaseRenewAfterSeconds: REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS,
+            });
             return new Response(null, {
               status: 101,
               webSocket: clientSocket,
@@ -451,8 +513,15 @@ export class RoomHub extends DurableObject<Env> {
       return;
     }
 
+    if (attachment.disconnectHandled) {
+      closeSocket(socket, 1008, "Realtime session is already closed");
+      return;
+    }
+
+    attachment.lastClientActivityAt = Date.now();
     const admission = admitRealtimeCommand(attachment, command.type);
     if (!admission.allowed) {
+      socket.serializeAttachment(attachment);
       sendMessage(socket, {
         type: "ERROR",
         command: command.type,
@@ -463,11 +532,34 @@ export class RoomHub extends DurableObject<Env> {
       return;
     }
     Object.assign(attachment, admission.state);
+    attachment.operationId = nextOperationId(attachment.operationId);
+    const operationId = attachment.operationId;
     // Persist before the first await so hibernation cannot reset cadence.
     socket.serializeAttachment(attachment);
 
     try {
       await withRealtimeRuntime(this.env, async ({ db, matches }) => {
+        const requireCurrentOperation =
+          async (): Promise<SocketAttachment | null> => {
+            const current = readAttachment(socket);
+            if (
+              socket.readyState !== WebSocket.OPEN ||
+              !current ||
+              current.disconnectHandled ||
+              current.sessionId !== attachment.sessionId
+            ) {
+              // A close can interleave while Hyperdrive I/O is in flight. Undo a
+              // possible reactivation so a completed heartbeat cannot resurrect
+              // a transport that is already gone.
+              await matches.disconnectSession(
+                attachment.sessionId,
+                attachment.userId,
+              );
+              return null;
+            }
+            return current.operationId === operationId ? current : null;
+          };
+
         if (command.type === "PING") {
           const heartbeat = await refreshRealtimeSessionHeartbeat(matches, {
             actorUserId: attachment.userId,
@@ -475,8 +567,11 @@ export class RoomHub extends DurableObject<Env> {
             matchId: attachment.matchId,
             sessionId: attachment.sessionId,
           });
+          let current = await requireCurrentOperation();
+          if (!current) return;
+
           if (heartbeat.reactivated) {
-            attachment.cursor = heartbeat.snapshot.version;
+            current.cursor = heartbeat.snapshot.version;
             if (
               !sendMessage(socket, {
                 type: "SNAPSHOT",
@@ -487,18 +582,22 @@ export class RoomHub extends DurableObject<Env> {
             }
           } else {
             const events = await matches.eventsSince(
-              attachment.userId,
-              attachment.matchId,
-              attachment.cursor,
+              current.userId,
+              current.matchId,
+              current.cursor,
               100,
             );
+            current = await requireCurrentOperation();
+            if (!current) return;
             for (const event of events) {
-              if (event.version <= attachment.cursor) continue;
+              if (event.version <= current.cursor) continue;
               if (!sendMessage(socket, { type: "EVENT", event })) return;
-              attachment.cursor = event.version;
+              current.cursor = event.version;
             }
           }
-          socket.serializeAttachment(attachment);
+          current = await requireCurrentOperation();
+          if (!current) return;
+          socket.serializeAttachment(current);
           sendMessage(socket, {
             type: "PONG",
             serverTimestamp: new Date().toISOString(),
@@ -510,15 +609,24 @@ export class RoomHub extends DurableObject<Env> {
             matchId: attachment.matchId,
             sessionId: attachment.sessionId,
           });
-          attachment.cursor = connected.snapshot.version;
-          socket.serializeAttachment(attachment);
+          const current = await requireCurrentOperation();
+          if (!current) return;
+          current.cursor = connected.snapshot.version;
+          socket.serializeAttachment(current);
           sendMessage(socket, {
             type: "SNAPSHOT",
             snapshot: connected.snapshot,
           });
         }
 
-        await this.scheduleAt(await nextMatchWakeAt(db, attachment.matchId));
+        try {
+          await this.scheduleAt(await nextMatchWakeAt(db, attachment.matchId));
+        } catch (scheduleError) {
+          logFailure("realtime.socket.command_schedule_failed", scheduleError, {
+            matchId: attachment.matchId,
+            command: command.type,
+          });
+        }
       });
     } catch (error) {
       if (!(error instanceof DomainError)) {
@@ -527,8 +635,79 @@ export class RoomHub extends DurableObject<Env> {
           command: command.type,
         });
       }
-      sendMessage(socket, domainErrorMessage(error, command.type));
+      if (isCurrentSocketOperation(socket, attachment.sessionId, operationId)) {
+        sendMessage(socket, domainErrorMessage(error, command.type));
+      }
     }
+  }
+
+  private async refreshOpenSocketSessions(
+    matches: RealtimeRuntime["matches"],
+  ): Promise<{
+    refreshed: number;
+    reactivated: number;
+  }> {
+    const result = { refreshed: 0, reactivated: 0 };
+
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const attachment = readAttachment(socket);
+      if (!attachment) {
+        closeSocket(socket, 1008, "Realtime session metadata is invalid");
+        continue;
+      }
+      if (attachment.disconnectHandled) continue;
+
+      try {
+        /*
+         * Cloudflare owns this transport and reports peer loss through
+         * webSocketClose/webSocketError. Treat an attached OPEN socket as the
+         * lease authority so a browser tab suspended by the OS cannot be
+         * falsely disconnected merely because its JavaScript timers stopped.
+         */
+        const heartbeat = await refreshRealtimeSessionHeartbeat(matches, {
+          actorUserId: attachment.userId,
+          roomId: attachment.roomId,
+          matchId: attachment.matchId,
+          sessionId: attachment.sessionId,
+        });
+        const current = readAttachment(socket);
+        if (
+          socket.readyState !== WebSocket.OPEN ||
+          !current ||
+          current.disconnectHandled ||
+          current.sessionId !== attachment.sessionId
+        ) {
+          await matches.disconnectSession(
+            attachment.sessionId,
+            attachment.userId,
+          );
+          continue;
+        }
+
+        if (heartbeat.reactivated) {
+          current.cursor = Math.max(current.cursor, heartbeat.snapshot.version);
+          result.reactivated += 1;
+          if (
+            !sendMessage(socket, {
+              type: "SNAPSHOT",
+              snapshot: heartbeat.snapshot,
+            })
+          ) {
+            closeSocket(socket, 1011, "Realtime lease sync failed");
+            continue;
+          }
+        }
+        socket.serializeAttachment(current);
+        result.refreshed += 1;
+      } catch (error) {
+        logFailure("realtime.socket.lease_refresh_failed", error, {
+          matchId: attachment.matchId,
+        });
+      }
+    }
+
+    return result;
   }
 
   private async disconnectSocket(
@@ -536,7 +715,15 @@ export class RoomHub extends DurableObject<Env> {
     event: "close" | "error",
   ): Promise<void> {
     const attachment = readAttachment(socket);
-    if (!attachment) return;
+    if (!attachment || attachment.disconnectHandled) return;
+    attachment.disconnectHandled = true;
+    attachment.operationId = nextOperationId(attachment.operationId);
+    try {
+      socket.serializeAttachment(attachment);
+    } catch {
+      // Cloudflare may discard attachments before invoking webSocketClose.
+      // Database cleanup remains idempotent and must still run.
+    }
 
     try {
       await withRealtimeRuntime(this.env, async ({ db, matches }) => {
@@ -544,10 +731,24 @@ export class RoomHub extends DurableObject<Env> {
           attachment.sessionId,
           attachment.userId,
         );
-        await this.scheduleAt(await nextMatchWakeAt(db, attachment.matchId));
+        try {
+          await this.scheduleAt(await nextMatchWakeAt(db, attachment.matchId));
+        } catch (scheduleError) {
+          logFailure(
+            "realtime.socket.disconnect_schedule_failed",
+            scheduleError,
+            { matchId: attachment.matchId },
+          );
+        }
       });
       this.broadcastInvalidation(attachment.matchId, "presence-changed");
     } catch (error) {
+      attachment.disconnectHandled = false;
+      try {
+        socket.serializeAttachment(attachment);
+      } catch {
+        // A later stale-session sweep is the final fallback.
+      }
       logFailure(`realtime.socket.${event}_failed`, error, {
         matchId: attachment.matchId,
       });
@@ -560,9 +761,15 @@ export class RoomHub extends DurableObject<Env> {
     reason: string,
     wasClean: boolean,
   ): Promise<void> {
-    void code;
-    void reason;
-    void wasClean;
+    const attachment = readAttachment(socket);
+    logEvent("realtime.socket.closed", {
+      ...(attachment
+        ? { matchId: attachment.matchId, slot: attachment.slot }
+        : {}),
+      code,
+      wasClean,
+      reason: reason.slice(0, 120),
+    });
     await this.disconnectSocket(socket, "close");
   }
 
@@ -570,7 +777,12 @@ export class RoomHub extends DurableObject<Env> {
     socket: WebSocket,
     error: unknown,
   ): Promise<void> {
-    logFailure("realtime.socket.transport_error", error);
+    const attachment = readAttachment(socket);
+    logFailure("realtime.socket.transport_error", error, {
+      ...(attachment
+        ? { matchId: attachment.matchId, slot: attachment.slot }
+        : {}),
+    });
     await this.disconnectSocket(socket, "error");
     closeSocket(socket, 1011, "Realtime transport failed");
   }
@@ -581,9 +793,12 @@ export class RoomHub extends DurableObject<Env> {
 
     try {
       let nextWakeAt: number | null = null;
+      let shouldBroadcast = false;
+      let leaseResult = { refreshed: 0, reactivated: 0 };
       await withRealtimeRuntime(this.env, async ({ db, matches }) => {
         try {
-          await matches.advanceCountdown(matchId);
+          shouldBroadcast =
+            (await matches.advanceCountdown(matchId)) || shouldBroadcast;
         } catch (error) {
           if (
             !(error instanceof DomainError) ||
@@ -593,13 +808,32 @@ export class RoomHub extends DurableObject<Env> {
           }
         }
 
-        await matches.expireStaleSessionsForMatch(matchId);
-        await matches.processDueDisconnectForMatch(matchId);
-        await matches.recoverStaleExecutionsForMatch(matchId);
+        // Cloudflare owns the transport, so an attached OPEN socket renews its
+        // database lease even if browser timers were throttled. This runs
+        // before stale-session expiration with a substantial margin.
+        leaseResult = await this.refreshOpenSocketSessions(matches);
+        shouldBroadcast = leaseResult.reactivated > 0 || shouldBroadcast;
+        shouldBroadcast =
+          (await matches.expireStaleSessionsForMatch(matchId)) > 0 ||
+          shouldBroadcast;
+        shouldBroadcast =
+          (await matches.processDueDisconnectForMatch(matchId)) > 0 ||
+          shouldBroadcast;
+        shouldBroadcast =
+          (await matches.recoverStaleExecutionsForMatch(matchId)) > 0 ||
+          shouldBroadcast;
         nextWakeAt = await nextMatchWakeAt(db, matchId);
       });
 
-      this.broadcastInvalidation(matchId, "maintenance");
+      if (leaseResult.reactivated > 0) {
+        logEvent("realtime.room_leases.reconciled", {
+          matchId,
+          ...leaseResult,
+        });
+      }
+      if (shouldBroadcast) {
+        this.broadcastInvalidation(matchId, "maintenance");
+      }
       await this.scheduleAt(nextWakeAt);
     } catch (error) {
       logFailure("realtime.room_alarm.failed", error, { matchId });

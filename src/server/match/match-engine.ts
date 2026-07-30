@@ -10,6 +10,7 @@ import {
   assertTransition,
   shouldApplyRecord,
 } from "@/server/domain/state-machine";
+import { REALTIME_SESSION_STALE_AFTER_SECONDS } from "@/server/realtime/timing";
 import type {
   Difficulty,
   EndReason,
@@ -690,7 +691,8 @@ export class MatchEngine {
                  WHERE rs.match_id = mp.match_id
                    AND rs.clerk_user_id = mp.clerk_user_id
                    AND rs.disconnected_at IS NULL
-                   AND rs.last_seen_at > clock_timestamp() - interval '45 seconds'
+                   AND rs.last_seen_at > clock_timestamp()
+                     - (${REALTIME_SESSION_STALE_AFTER_SECONDS} * interval '1 second')
                ) AS live
         FROM match_participants mp
         WHERE mp.match_id = ${input.matchId}
@@ -788,7 +790,8 @@ export class MatchEngine {
         WHERE rs.match_id = mp.match_id
           AND rs.clerk_user_id = mp.clerk_user_id
           AND rs.disconnected_at IS NULL
-          AND rs.last_seen_at > clock_timestamp() - interval '45 seconds'
+          AND rs.last_seen_at > clock_timestamp()
+            - (${REALTIME_SESSION_STALE_AFTER_SECONDS} * interval '1 second')
       ) AS live
       FROM match_participants mp
       WHERE mp.match_id = ${matchId} AND mp.clerk_user_id = ${actorUserId}
@@ -1938,7 +1941,8 @@ export class MatchEngine {
                  SELECT 1 FROM realtime_sessions
                  WHERE match_id = ${matchId} AND clerk_user_id = ${actorUserId}
                    AND disconnected_at IS NULL
-                   AND last_seen_at > clock_timestamp() - interval '45 seconds'
+                   AND last_seen_at > clock_timestamp()
+                     - (${REALTIME_SESSION_STALE_AFTER_SECONDS} * interval '1 second')
                ) AS active,
                max(COALESCE(disconnected_at, last_seen_at))::text AS disconnected_at
         FROM realtime_sessions
@@ -1994,7 +1998,8 @@ export class MatchEngine {
       UPDATE realtime_sessions
       SET disconnected_at = last_seen_at
       WHERE disconnected_at IS NULL
-        AND last_seen_at <= clock_timestamp() - interval '45 seconds'
+        AND last_seen_at <= clock_timestamp()
+          - (${REALTIME_SESSION_STALE_AFTER_SECONDS} * interval '1 second')
       RETURNING match_id, clerk_user_id
     `;
     return this.reconcileExpiredSessions(sessions);
@@ -2008,7 +2013,8 @@ export class MatchEngine {
       SET disconnected_at = last_seen_at
       WHERE match_id = ${matchId}
         AND disconnected_at IS NULL
-        AND last_seen_at <= clock_timestamp() - interval '45 seconds'
+        AND last_seen_at <= clock_timestamp()
+          - (${REALTIME_SESSION_STALE_AFTER_SECONDS} * interval '1 second')
       RETURNING match_id, clerk_user_id
     `;
     return this.reconcileExpiredSessions(sessions);
