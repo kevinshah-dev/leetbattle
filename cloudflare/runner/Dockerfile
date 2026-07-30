@@ -3,7 +3,8 @@ FROM docker.io/library/ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5ab
 ARG PYTHON_VERSION=3.13.5
 ARG PYTHON_SHA256=e6190f52699b534ee203d9f417bdbca05a92f23e35c19c691a50ed2942835385
 
-RUN apt-get update \
+RUN export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
@@ -41,7 +42,8 @@ FROM docker.io/library/eclipse-temurin:21.0.8_9-jdk-jammy@sha256:adb9b2d15adf183
 # a read-only root filesystem and no network namespace.
 FROM docker.io/library/ubuntu:22.04@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982 AS judge-rootfs
 
-RUN apt-get update \
+RUN export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC \
+    && apt-get update \
     && apt-get install -y --no-install-recommends coreutils \
     && groupadd --gid 65532 leetbattle-runner \
     && useradd \

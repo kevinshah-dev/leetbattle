@@ -25,34 +25,41 @@ function extractRoomCode(value: string) {
 function CircuitDuelPreview() {
   return (
     <div
-      aria-label="Two original compiler pilots face off in the Circuit Pit"
+      aria-label="Two pixel compiler pilots trade charged code blasts in the Circuit Pit"
       className="duel-preview"
       role="img"
     >
-      <div className="duel-preview__sky">
-        <span className="duel-preview__node duel-preview__node--one" />
-        <span className="duel-preview__node duel-preview__node--two" />
-        <span className="duel-preview__beam" />
+      <div aria-hidden="true" className="duel-preview__exchange">
+        <span className="duel-preview__packet duel-preview__packet--left" />
+        <span className="duel-preview__packet duel-preview__packet--right" />
+        <span className="duel-preview__hit duel-preview__hit--left" />
+        <span className="duel-preview__hit duel-preview__hit--right" />
       </div>
       <div className="duel-preview__fighter duel-preview__fighter--left">
-        <span className="pixel-fighter__antenna" />
-        <span className="pixel-fighter__head">
-          <i />
+        <span className="pixel-fighter__shadow" />
+        <span className="pixel-fighter__body">
+          <span className="pixel-fighter__antenna" />
+          <span className="pixel-fighter__head">
+            <i />
+          </span>
+          <span className="pixel-fighter__core" />
+          <span className="pixel-fighter__arm pixel-fighter__arm--front" />
+          <span className="pixel-fighter__arm pixel-fighter__arm--back" />
+          <span className="pixel-fighter__feet" />
         </span>
-        <span className="pixel-fighter__core" />
-        <span className="pixel-fighter__arm pixel-fighter__arm--front" />
-        <span className="pixel-fighter__arm pixel-fighter__arm--back" />
-        <span className="pixel-fighter__feet" />
       </div>
       <div className="duel-preview__fighter duel-preview__fighter--right">
-        <span className="pixel-fighter__antenna" />
-        <span className="pixel-fighter__head">
-          <i />
+        <span className="pixel-fighter__shadow" />
+        <span className="pixel-fighter__body">
+          <span className="pixel-fighter__antenna" />
+          <span className="pixel-fighter__head">
+            <i />
+          </span>
+          <span className="pixel-fighter__core" />
+          <span className="pixel-fighter__arm pixel-fighter__arm--front" />
+          <span className="pixel-fighter__arm pixel-fighter__arm--back" />
+          <span className="pixel-fighter__feet" />
         </span>
-        <span className="pixel-fighter__core" />
-        <span className="pixel-fighter__arm pixel-fighter__arm--front" />
-        <span className="pixel-fighter__arm pixel-fighter__arm--back" />
-        <span className="pixel-fighter__feet" />
       </div>
       <div className="duel-preview__floor">
         <span />
@@ -134,11 +141,6 @@ export function HomeExperience() {
     <main className="landing" id="main-content">
       <section className="landing__hero">
         <div className="landing__copy">
-          <div className="eyebrow">
-            <span>Private match</span>
-            <span>2 players</span>
-            <span>1 problem</span>
-          </div>
           <h1>
             Code first.
             <br />
@@ -269,29 +271,7 @@ export function HomeExperience() {
             <p aria-live="polite" className="form-error">
               {joinError}
             </p>
-            <p className="quick-match__note">
-              No matchmaking. No spectators. Your room stays unlisted.
-            </p>
           </div>
-        </div>
-      </section>
-      <section aria-label="Match flow" className="flow-strip">
-        <div>
-          <span>01</span>
-          <strong>Choose difficulty</strong>
-          <small>Easy · Medium · Hard</small>
-        </div>
-        <i aria-hidden="true" />
-        <div>
-          <span>02</span>
-          <strong>Lock in together</strong>
-          <small>Python or Java</small>
-        </div>
-        <i aria-hidden="true" />
-        <div>
-          <span>03</span>
-          <strong>Land the final pass</strong>
-          <small>Hidden tests decide</small>
         </div>
       </section>
     </main>
