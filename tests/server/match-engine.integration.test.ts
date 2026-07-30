@@ -61,6 +61,34 @@ const infra: RunnerResult = {
   compileMs: null,
 };
 
+function postgresErrorCode(error: unknown): string | null {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+  return null;
+}
+
+async function waitForRowLock(
+  probe: () => PromiseLike<unknown>,
+): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await probe();
+    } catch (error) {
+      if (postgresErrorCode(error) === "55P03") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the expected PostgreSQL row lock");
+}
+
 integration("PostgreSQL authoritative match engine", () => {
   let harness: PostgresHarness;
   let profiles: ProfileService;
@@ -182,6 +210,161 @@ integration("PostgreSQL authoritative match engine", () => {
       }),
     ).rejects.toMatchObject({ code: "HOST_CANNOT_JOIN_OWN_ROOM" });
   });
+
+  it(
+    "avoids the room-to-match deadlock when join and realtime connect overlap",
+    { timeout: 15_000 },
+    async () => {
+      await players();
+      const room = await engine.createRoom({
+        actorUserId: "host",
+        difficulty: "EASY",
+        idempotencyKey: key("create"),
+      });
+      const { matchId, roomId } = room.snapshot;
+      const blocker = await harness.sql.reserve();
+      let blockerOpen = false;
+      let pendingConnect: ReturnType<MatchEngine["connectSession"]> | undefined;
+      let pendingJoin: ReturnType<MatchEngine["joinRoom"]> | undefined;
+      try {
+        await blocker`BEGIN`;
+        blockerOpen = true;
+        await blocker`
+          SELECT clerk_user_id
+          FROM match_participants
+          WHERE match_id = ${matchId} AND clerk_user_id = 'host'
+          FOR UPDATE
+        `;
+
+        pendingConnect = engine.connectSession({
+          actorUserId: "host",
+          roomId,
+          matchId,
+        });
+        await waitForRowLock(
+          () => harness.sql`
+          SELECT id FROM matches
+          WHERE id = ${matchId}
+          FOR NO KEY UPDATE NOWAIT
+        `,
+        );
+
+        pendingJoin = engine.joinRoom({
+          actorUserId: "opponent",
+          inviteToken: room.inviteToken,
+          idempotencyKey: key("join"),
+        });
+        await waitForRowLock(
+          () => harness.sql`
+          SELECT id FROM rooms
+          WHERE id = ${roomId}
+          FOR NO KEY UPDATE NOWAIT
+        `,
+        );
+
+        await blocker`ROLLBACK`;
+        blockerOpen = false;
+        await Promise.all([pendingConnect, pendingJoin]);
+
+        const [stored] = await harness.sql<
+          { members: number; host_sessions: number }[]
+        >`
+          SELECT
+            (SELECT count(*)::int FROM room_members WHERE room_id = ${roomId}) AS members,
+            (SELECT count(*)::int FROM realtime_sessions
+             WHERE match_id = ${matchId} AND clerk_user_id = 'host') AS host_sessions
+        `;
+        expect(stored).toEqual({ members: 2, host_sessions: 1 });
+      } finally {
+        if (blockerOpen) await blocker`ROLLBACK`;
+        blocker.release();
+        await Promise.allSettled(
+          [pendingConnect, pendingJoin].filter(
+            (pending) => pending !== undefined,
+          ),
+        );
+      }
+    },
+  );
+
+  it(
+    "avoids the profile-to-match deadlock when ticket issue and connect overlap",
+    { timeout: 15_000 },
+    async () => {
+      await players();
+      const room = await engine.createRoom({
+        actorUserId: "host",
+        difficulty: "EASY",
+        idempotencyKey: key("create"),
+      });
+      const { matchId, roomId } = room.snapshot;
+      const tickets = new RealtimeTicketService(
+        harness.sql,
+        engine,
+        "integration realtime secret that is at least thirty two bytes",
+      );
+      const blocker = await harness.sql.reserve();
+      let blockerOpen = false;
+      let pendingConnect: ReturnType<MatchEngine["connectSession"]> | undefined;
+      let pendingIssue: ReturnType<RealtimeTicketService["issue"]> | undefined;
+      try {
+        await blocker`BEGIN`;
+        blockerOpen = true;
+        await blocker`
+          SELECT clerk_user_id
+          FROM match_participants
+          WHERE match_id = ${matchId} AND clerk_user_id = 'host'
+          FOR UPDATE
+        `;
+
+        pendingConnect = engine.connectSession({
+          actorUserId: "host",
+          roomId,
+          matchId,
+        });
+        await waitForRowLock(
+          () => harness.sql`
+          SELECT id FROM matches
+          WHERE id = ${matchId}
+          FOR NO KEY UPDATE NOWAIT
+        `,
+        );
+
+        pendingIssue = tickets.issue("host", roomId);
+        await waitForRowLock(
+          () => harness.sql`
+          SELECT clerk_user_id FROM profiles
+          WHERE clerk_user_id = 'host'
+          FOR NO KEY UPDATE NOWAIT
+        `,
+        );
+
+        await blocker`ROLLBACK`;
+        blockerOpen = false;
+        const [, issued] = await Promise.all([pendingConnect, pendingIssue]);
+        expect(issued.token).toBeTruthy();
+
+        const [stored] = await harness.sql<
+          { host_sessions: number; ticket_issues: number }[]
+        >`
+          SELECT
+            (SELECT count(*)::int FROM realtime_sessions
+             WHERE match_id = ${matchId} AND clerk_user_id = 'host') AS host_sessions,
+            (SELECT count(*)::int FROM realtime_ticket_issues
+             WHERE match_id = ${matchId} AND clerk_user_id = 'host') AS ticket_issues
+        `;
+        expect(stored).toEqual({ host_sessions: 1, ticket_issues: 1 });
+      } finally {
+        if (blockerOpen) await blocker`ROLLBACK`;
+        blocker.release();
+        await Promise.allSettled(
+          [pendingConnect, pendingIssue].filter(
+            (pending) => pending !== undefined,
+          ),
+        );
+      }
+    },
+  );
 
   it("selects and reveals a problem only after both players are ready", async () => {
     await players();

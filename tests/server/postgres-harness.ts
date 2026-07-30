@@ -16,16 +16,25 @@ export async function createPostgresHarness(
 ): Promise<PostgresHarness> {
   const schema = `leetbattle_test_${randomBytes(8).toString("hex")}`;
   const admin = postgres(databaseUrl, { max: 1 });
+  await admin.unsafe(
+    "CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public; " +
+      "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public",
+  );
   await admin.unsafe(`CREATE SCHEMA "${schema}"`);
 
   const scopedUrl = new URL(databaseUrl);
-  scopedUrl.searchParams.set("options", `-c search_path=${schema}`);
+  scopedUrl.searchParams.set("options", `-c search_path=${schema},public`);
   const sql = postgres(scopedUrl.toString(), { max: 10, prepare: false });
   const migration = await readFile(
     new URL("../../db/migrations/001_initial.sql", import.meta.url),
     "utf8",
   );
-  await sql.unsafe(migration);
+  const migrationConnection = await sql.reserve();
+  try {
+    await migrationConnection.unsafe(migration);
+  } finally {
+    migrationConnection.release();
+  }
 
   return {
     sql,
