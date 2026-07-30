@@ -1047,12 +1047,62 @@ After initial secrets are installed, normal releases can use:
 ```bash
 npm run deploy:runner
 npm run deploy:realtime
-npm run deploy:web
+
+NEXT_PUBLIC_REALTIME_URL=wss://ws.leetbattle.cenough.games \
+  npm run build:cloudflare
+
+rg --files-with-matches \
+  --fixed-strings \
+  'wss://ws.leetbattle.cenough.games' \
+  .open-next/assets/_next/static/chunks
+
+npx opennextjs-cloudflare deploy
 ```
 
 Continue to use dependency order for a coordinated release: backward-compatible
 runner changes, backward-compatible realtime changes, then web. Remove old
 downstream behavior only in a later release after all callers have moved.
+
+Build web once, inspect that artifact, and deploy it with the direct OpenNext
+command. Do not run `npm run deploy:web` after inspecting `.open-next`: that
+script starts another build, so it would deploy a different artifact from the
+one that was verified.
+
+### 7.4 Workers Builds and Git integration
+
+Cloudflare Workers Builds runs in a remote environment. Ignored local files
+such as `.env.production.local` are not available there, and runtime Worker
+secrets are not inputs to `next build`. Configure these values under
+**Settings > Builds > Build Variables and Secrets**:
+
+```dotenv
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_replace_me
+NEXT_PUBLIC_REALTIME_URL=wss://ws.leetbattle.cenough.games
+```
+
+Use:
+
+```text
+Build command:  npm run build:cloudflare
+Deploy command: npx opennextjs-cloudflare deploy
+```
+
+The bundle check fails the build if the production realtime URL is absent, an
+unresolved `NEXT_PUBLIC_REALTIME_URL` reference remains, or a local WebSocket
+URL appears in emitted client JavaScript. Treat that failure as a build
+configuration error; do not bypass it.
+
+Choose one production authority:
+
+- If Git is authoritative, stop routine manual production web deployments and
+  coordinate runner, realtime, and web in dependency order from one pipeline.
+- If the release terminal is authoritative, disconnect automatic production
+  deployment or use `npx opennextjs-cloudflare upload` in the Git deploy step,
+  then promote verified versions explicitly.
+
+Do not let separate automatic and manual writers race for the same production
+Worker. Each successful deployment becomes the active version regardless of
+which path produced it.
 
 ## 8. Production validation
 
