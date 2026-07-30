@@ -1072,13 +1072,20 @@ one that was verified.
 
 Cloudflare Workers Builds runs in a remote environment. Ignored local files
 such as `.env.production.local` are not available there, and runtime Worker
-secrets are not inputs to `next build`. Configure these values under
-**Settings > Builds > Build Variables and Secrets**:
+secrets are not inputs to `next build`. This repository intentionally tracks
+only the non-secret production realtime endpoint in `.env.production`, so a
+Git build has a safe default even when the dashboard variable is omitted.
+Keep the Clerk key in **Settings > Builds > Build Variables and Secrets**, and
+set both values there when the deployment target should override the
+repository default:
 
 ```dotenv
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_replace_me
 NEXT_PUBLIC_REALTIME_URL=wss://ws.leetbattle.cenough.games
 ```
+
+Never add a secret, database URL, or private Clerk key to `.env.production`.
+Process-level build variables take precedence over the tracked public default.
 
 Use:
 
