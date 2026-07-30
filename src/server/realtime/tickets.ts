@@ -54,10 +54,12 @@ export class RealtimeTicketService {
       // Serialize issuance across every room owned by this user so the
       // per-minute bound remains atomic across Worker isolates.
       const [profile] = await tx<{ clerk_user_id: string }[]>`
+        -- NO KEY UPDATE still serializes issuers, while allowing the KEY SHARE
+        -- taken by a concurrent realtime-session FK after it locks the match.
         SELECT clerk_user_id
         FROM profiles
         WHERE clerk_user_id = ${actorUserId}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `;
       if (!profile) {
         throw new DomainError(

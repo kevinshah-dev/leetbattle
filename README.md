@@ -55,6 +55,10 @@ in browser assets during `next build`. Set their final values before building
 an image; changing only the running container's environment does not update
 those assets. When overriding `REALTIME_PORT`, also set
 `NEXT_PUBLIC_REALTIME_URL` to the browser-reachable URL using that port.
+The repository pins the public production WebSocket endpoint in
+`.env.production` so remote production builds cannot silently fall back to
+polling. A process-level value still overrides it for staging or another
+deployment target.
 
 To run everything through Docker after building the two judge images:
 

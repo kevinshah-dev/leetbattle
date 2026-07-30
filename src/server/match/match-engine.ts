@@ -441,10 +441,12 @@ export class MatchEngine {
           closed_at: string | null;
         }[]
       >`
+        -- Keep this weaker than FOR UPDATE. Realtime-session foreign keys take
+        -- KEY SHARE on this row after locking the match in the opposite order.
         SELECT id, host_user_id, active_match_id, closed_at::text
         FROM rooms
         WHERE invite_token_hash = ${tokenHash}
-        FOR UPDATE
+        FOR NO KEY UPDATE
       `;
       if (!room)
         throw new DomainError(
