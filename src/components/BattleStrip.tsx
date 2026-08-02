@@ -1,4 +1,4 @@
-import type { MatchState, PlayerHud } from "./api-client";
+import type { MatchMode, MatchState, PlayerHud } from "./api-client";
 
 function activityLabel(player: PlayerHud | null) {
   if (!player) return "Waiting for challenger";
@@ -80,14 +80,27 @@ function Fighter({
   );
 }
 
+function PracticeTarget() {
+  return (
+    <div aria-hidden="true" className="practice-target">
+      <span>&gt;_</span>
+      <i />
+      <i />
+      <i />
+    </div>
+  );
+}
+
 export function BattleStrip({
   centerLabel,
+  mode,
   opponent,
   self,
   state,
   timer,
 }: {
   centerLabel?: string;
+  mode: MatchMode;
   opponent: PlayerHud | null;
   self: PlayerHud;
   state: MatchState;
@@ -95,8 +108,10 @@ export function BattleStrip({
 }) {
   return (
     <section
-      aria-label="Live battle status"
-      className={`battle-strip battle-strip--${state.toLowerCase()}`}
+      aria-label={
+        mode === "PRACTICE" ? "Practice status" : "Live battle status"
+      }
+      className={`battle-strip battle-strip--${state.toLowerCase()}${mode === "PRACTICE" ? " battle-strip--practice" : ""}`}
     >
       <div className="player-hud player-hud--self">
         <div className="player-hud__line">
@@ -120,7 +135,11 @@ export function BattleStrip({
           <b>{centerLabel || "VS"}</b>
           <span className="tabular">{timer}</span>
         </div>
-        <Fighter player={opponent} side="right" />
+        {mode === "PRACTICE" ? (
+          <PracticeTarget />
+        ) : (
+          <Fighter player={opponent} side="right" />
+        )}
         <div className="pit-floor">
           <span />
           <span />
@@ -136,17 +155,32 @@ export function BattleStrip({
           <span />
         </div>
       </div>
-      <div className="player-hud player-hud--opponent">
-        <div className="player-hud__line">
-          <strong>{opponent?.username || "OPEN SLOT"}</strong>
-          <span>P2 · RIVAL</span>
+      {mode === "PRACTICE" ? (
+        <div className="player-hud player-hud--opponent player-hud--practice">
+          <div className="player-hud__line">
+            <strong>HIDDEN SUITE</strong>
+            <span>SOLO GOAL</span>
+          </div>
+          <div aria-hidden="true" className="practice-test-rail">
+            {Array.from({ length: 10 }, (_, index) => (
+              <i key={index} />
+            ))}
+          </div>
+          <div className="player-hud__status">Pass every test to finish</div>
         </div>
-        <ProgressRail player={opponent} reverse />
-        <div className="player-hud__status">
-          <span className={opponent?.connected ? "is-online" : ""} />
-          {activityLabel(opponent)}
+      ) : (
+        <div className="player-hud player-hud--opponent">
+          <div className="player-hud__line">
+            <strong>{opponent?.username || "OPEN SLOT"}</strong>
+            <span>P2 · RIVAL</span>
+          </div>
+          <ProgressRail player={opponent} reverse />
+          <div className="player-hud__status">
+            <span className={opponent?.connected ? "is-online" : ""} />
+            {activityLabel(opponent)}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }

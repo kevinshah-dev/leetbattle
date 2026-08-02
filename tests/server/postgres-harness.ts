@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 
 import postgres from "postgres";
 
@@ -25,13 +25,19 @@ export async function createPostgresHarness(
   const scopedUrl = new URL(databaseUrl);
   scopedUrl.searchParams.set("options", `-c search_path=${schema},public`);
   const sql = postgres(scopedUrl.toString(), { max: 10, prepare: false });
-  const migration = await readFile(
-    new URL("../../db/migrations/001_initial.sql", import.meta.url),
-    "utf8",
-  );
+  const migrationsDirectory = new URL("../../db/migrations/", import.meta.url);
+  const migrationFiles = (await readdir(migrationsDirectory))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
   const migrationConnection = await sql.reserve();
   try {
-    await migrationConnection.unsafe(migration);
+    for (const file of migrationFiles) {
+      const migration = await readFile(
+        new URL(file, migrationsDirectory),
+        "utf8",
+      );
+      await migrationConnection.unsafe(migration);
+    }
   } finally {
     migrationConnection.release();
   }

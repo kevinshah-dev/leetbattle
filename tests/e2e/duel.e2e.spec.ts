@@ -12,7 +12,13 @@ import { e2eGateReason } from "./environment";
 interface ProfileResponse {
   profile: {
     username: string;
+    wins: number;
+    losses: number;
   } | null;
+}
+
+interface HistoryResponse {
+  matches: unknown[];
 }
 
 const gateReason = e2eGateReason();
@@ -83,6 +89,25 @@ async function ensureProfile(page: Page, fallback: string): Promise<string> {
   const payload = (await response.json()) as ProfileResponse;
   expect(payload.profile?.username).toBeTruthy();
   return payload.profile!.username;
+}
+
+async function profileRecord(page: Page): Promise<{
+  wins: number;
+  losses: number;
+}> {
+  const response = await page.context().request.get("/api/profile");
+  expect(response.ok()).toBeTruthy();
+  const payload = (await response.json()) as ProfileResponse;
+  if (!payload.profile)
+    throw new Error("Authenticated E2E profile is missing.");
+  return { wins: payload.profile.wins, losses: payload.profile.losses };
+}
+
+async function historyCount(page: Page): Promise<number> {
+  const response = await page.context().request.get("/api/history");
+  expect(response.ok()).toBeTruthy();
+  const payload = (await response.json()) as HistoryResponse;
+  return payload.matches.length;
 }
 
 function roundScopedUsername(role: "host" | "guest"): string {
@@ -380,6 +405,101 @@ test.describe("real two-player duel", () => {
       });
     } finally {
       await Promise.all([hostContext.close(), guestContext.close()]);
+    }
+  });
+});
+
+test.describe("real single-player practice", () => {
+  test.skip(gateReason !== null, gateReason || "");
+
+  test("one Clerk session clears the real judge without changing its record", async ({
+    browser,
+    baseURL,
+    request,
+  }) => {
+    const unavailable = await appAvailabilityReason(request);
+    expect(
+      unavailable,
+      unavailable ?? "The configured LeetBattle stack is reachable.",
+    ).toBeNull();
+    if (!baseURL) throw new Error("Playwright requires an E2E_BASE_URL.");
+
+    const context = await browser.newContext({
+      baseURL,
+      viewport: { width: 1440, height: 900 },
+    });
+    const page = await context.newPage();
+    try {
+      await signIn(page, process.env.E2E_CLERK_HOST_EMAIL!);
+      await ensureProfile(page, roundScopedUsername("host"));
+      const recordBefore = await profileRecord(page);
+      const historyBefore = await historyCount(page);
+
+      await page.goto("/battle/new?mode=practice");
+      await expect(
+        page.getByRole("radio", { name: /^Practice mode/ }),
+      ).toHaveAttribute("aria-checked", "true");
+      await page.getByRole("radio", { name: /^Easy/ }).click();
+      await page.getByRole("button", { name: "Start practice" }).click();
+      await expect(page).toHaveURL(/\/lobby\/[^/?#]+$/);
+      await expect(
+        page.getByRole("region", { name: "Practice setup" }),
+      ).toContainText("There is no rival");
+      await expect(page.getByLabel("Private invite")).toHaveCount(0);
+
+      await page.getByRole("button", { name: /Python/ }).click();
+      await page.getByRole("button", { name: "Start practice" }).click();
+      await expect(page).toHaveURL(/\/battle\/[^/?#]+$/, { timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: "End practice" }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "Forfeit" })).toHaveCount(
+        0,
+      );
+
+      const runSamples = page.getByRole("button", { name: /Run samples/ });
+      await expect(runSamples).toBeEnabled({ timeout: 30_000 });
+      const title = await page
+        .getByRole("tabpanel")
+        .getByRole("heading", { level: 1 })
+        .innerText();
+      const canonical = canonicalByTitle.get(title);
+      if (!canonical) {
+        throw new Error(`No canonical E2E source exists for ${title}.`);
+      }
+
+      await replaceEditorSource(page, "Python", canonical.python);
+      await runSamples.click();
+      await expect(
+        page.getByRole("region", { name: "Judge console" }),
+      ).toContainText("Sample 3", { timeout: 60_000 });
+
+      await page.reload();
+      const submit = page.getByRole("button", { name: /Submit solution/ });
+      await expect(submit).toBeEnabled({ timeout: 30_000 });
+      await submit.click();
+      await expect(
+        page
+          .getByRole("dialog")
+          .getByRole("heading", { name: "PRACTICE COMPLETE" }),
+      ).toBeVisible({ timeout: 90_000 });
+      await expect(
+        page.getByRole("button", { name: "Run it back" }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("link", { name: "Practice another" }),
+      ).toBeVisible();
+
+      const stripTimer = page
+        .getByRole("region", { name: "Practice status" })
+        .locator(".pit-center-mark .tabular");
+      const frozenTime = await stripTimer.innerText();
+      await page.waitForTimeout(1_200);
+      await expect(stripTimer).toHaveText(frozenTime);
+      expect(await profileRecord(page)).toEqual(recordBefore);
+      expect(await historyCount(page)).toBe(historyBefore);
+    } finally {
+      await context.close();
     }
   });
 });

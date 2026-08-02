@@ -61,6 +61,7 @@ function playerHud(
 function eventMessage(
   event: MatchEvent,
   selfSlot: number,
+  mode: MatchSnapshot["mode"],
 ): Pick<ActivityEvent, "message" | "tone"> {
   const slot =
     typeof event.payload.slot === "number" ? event.payload.slot : null;
@@ -68,7 +69,13 @@ function eventMessage(
   const actor = self ? "You" : "Your rival";
   switch (event.type) {
     case "MATCH_CREATED":
-      return { message: "Private battle room opened.", tone: "NEUTRAL" };
+      return {
+        message:
+          mode === "PRACTICE"
+            ? "Solo practice session opened."
+            : "Private battle room opened.",
+        tone: "NEUTRAL",
+      };
     case "PLAYER_JOINED":
       return {
         message: "A challenger claimed the second slot.",
@@ -86,11 +93,20 @@ function eventMessage(
       };
     case "COUNTDOWN_STARTED":
       return {
-        message: "Both players are ready. Reveal synchronized.",
+        message:
+          mode === "PRACTICE"
+            ? "Loadout locked. Problem reveal armed."
+            : "Both players are ready. Reveal synchronized.",
         tone: "SUCCESS",
       };
     case "MATCH_ACTIVE":
-      return { message: "FIGHT! The problem is now live.", tone: "SUCCESS" };
+      return {
+        message:
+          mode === "PRACTICE"
+            ? "GO! The practice problem is now live."
+            : "FIGHT! The problem is now live.",
+        tone: "SUCCESS",
+      };
     case "EXECUTION_STARTED":
       return {
         message:
@@ -129,7 +145,13 @@ function eventMessage(
         tone: event.payload.connected ? "SUCCESS" : "DANGER",
       };
     case "MATCH_FINISHED":
-      return { message: "The server finalized the round.", tone: "SUCCESS" };
+      return {
+        message:
+          mode === "PRACTICE"
+            ? "The server finalized your practice result."
+            : "The server finalized the round.",
+        tone: "SUCCESS",
+      };
     case "REMATCH_OPENED":
       return {
         message: "The 30-second rematch window is open.",
@@ -156,11 +178,12 @@ function eventMessage(
 function activityFeed(
   events: readonly MatchEvent[],
   selfSlot: number,
+  mode: MatchSnapshot["mode"],
 ): ActivityEvent[] {
   return events.map((event) => ({
     id: `${event.matchId}:${event.version}`,
     serverTimestamp: event.serverTimestamp,
-    ...eventMessage(event, selfSlot),
+    ...eventMessage(event, selfSlot, mode),
   }));
 }
 
@@ -225,6 +248,7 @@ function sampleResults(
 
 function submissionSummary(
   row: ExecutionViewRow | undefined,
+  mode: MatchSnapshot["mode"],
 ): SubmissionSummary | null {
   if (!row || row.status !== "COMPLETED" || !row.result_summary) return null;
   const summary = row.result_summary;
@@ -240,7 +264,9 @@ function submissionSummary(
           : (verdict as SubmissionSummary["verdict"]);
   const messages: Record<SubmissionSummary["verdict"], string> = {
     ACCEPTED:
-      "Every hidden test passed. The server is resolving receipt order.",
+      mode === "PRACTICE"
+        ? "Every hidden test passed. Practice complete."
+        : "Every hidden test passed. The server is resolving receipt order.",
     WRONG_ANSWER: "At least one hidden result did not match.",
     COMPILE_ERROR:
       "Compilation failed. Review the function contract and syntax.",
@@ -327,11 +353,15 @@ export async function presentRoomSnapshot(input: {
     const latestSubmit = executions.find(
       (execution) => execution.kind === "SUBMIT",
     );
+    const latestExecution = executions[0];
     const appOrigin = input.appOrigin.replace(/\/$/, "");
     return {
       roomCode: inviteToken,
-      inviteUrl: `${appOrigin}/join/${encodeURIComponent(inviteToken)}`,
+      ...(verified.mode === "DUEL"
+        ? { inviteUrl: `${appOrigin}/join/${encodeURIComponent(inviteToken)}` }
+        : {}),
       matchId: verified.matchId,
+      mode: verified.mode,
       roundNumber: verified.roundNumber,
       version: verified.version,
       serverNow: verified.serverTimestamp,
@@ -345,14 +375,21 @@ export async function presentRoomSnapshot(input: {
         ? playerHud(opponent, verified.state, verified.rematchVotes)
         : null,
       problem: verified.problem ? presentProblem(verified.problem) : null,
-      activity: activityFeed(events, self.slot),
+      activity: activityFeed(events, self.slot, verified.mode),
+      latestExecution: latestExecution
+        ? {
+            kind: latestExecution.kind,
+            status:
+              latestExecution.status === "COMPLETED" ? "COMPLETE" : "RUNNING",
+          }
+        : null,
       sampleRun: latestRun
         ? {
             status: latestRun.status === "COMPLETED" ? "COMPLETE" : "RUNNING",
             results: sampleResults(latestRun.result_summary),
           }
         : null,
-      lastSubmission: submissionSummary(latestSubmit),
+      lastSubmission: submissionSummary(latestSubmit, verified.mode),
       result: matchResult(verified, self),
     };
   }

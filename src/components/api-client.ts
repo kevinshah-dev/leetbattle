@@ -1,5 +1,6 @@
 export type Difficulty = "EASY" | "MEDIUM" | "HARD";
 export type Language = "PYTHON" | "JAVA";
+export type MatchMode = "DUEL" | "PRACTICE";
 export type MatchState =
   | "LOBBY"
   | "COUNTDOWN"
@@ -97,6 +98,7 @@ export interface MatchResult {
 
 export interface RoomSnapshot {
   matchId: string;
+  mode: MatchMode;
   roundNumber: number;
   roomCode: string;
   inviteUrl?: string;
@@ -111,6 +113,10 @@ export interface RoomSnapshot {
   opponent: PlayerHud | null;
   problem: PublicProblem | null;
   activity: ActivityEvent[];
+  latestExecution: {
+    kind: "RUN" | "SUBMIT";
+    status: "RUNNING" | "COMPLETE";
+  } | null;
   sampleRun: {
     status: "IDLE" | "RUNNING" | "COMPLETE";
     results: SampleResult[];
@@ -202,14 +208,18 @@ export function saveProfile(username: string) {
   });
 }
 
-export function createRoom(difficulty: Difficulty) {
+export function createRoom(difficulty: Difficulty, mode: MatchMode = "DUEL") {
   return request<{
     roomCode: string;
-    inviteUrl: string;
+    inviteUrl?: string;
     snapshot: RoomSnapshot;
   }>("/api/rooms", {
     method: "POST",
-    body: JSON.stringify({ difficulty, idempotencyKey: crypto.randomUUID() }),
+    body: JSON.stringify({
+      difficulty,
+      mode,
+      idempotencyKey: crypto.randomUUID(),
+    }),
   });
 }
 

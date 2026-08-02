@@ -17,6 +17,7 @@ import type {
   ExecutionKind,
   Language,
   MatchEvent,
+  MatchMode,
   MatchSnapshot,
   MatchState,
   ProblemCatalog,
@@ -30,6 +31,7 @@ type Tx = postgres.TransactionSql;
 interface MatchRow {
   id: string;
   room_id: string;
+  mode: MatchMode;
   round_number: number;
   state: MatchState;
   difficulty: Difficulty;
@@ -358,8 +360,10 @@ export class MatchEngine {
     actorUserId: string;
     difficulty: Difficulty;
     idempotencyKey: string;
+    mode?: MatchMode;
   }): Promise<{ inviteToken: string; snapshot: MatchSnapshot }> {
     requireActor(input.actorUserId);
+    const mode = input.mode ?? "DUEL";
     const inviteToken = this.inviteToken(
       input.actorUserId,
       input.idempotencyKey,
@@ -372,7 +376,10 @@ export class MatchEngine {
         actorUserId: input.actorUserId,
         idempotencyKey: input.idempotencyKey,
         commandType: "CREATE_ROOM",
-        payload: { difficulty: input.difficulty },
+        payload:
+          mode === "DUEL"
+            ? { difficulty: input.difficulty }
+            : { difficulty: input.difficulty, mode },
       });
       if (reservation.duplicate) {
         const existingRoomId = reservation.response?.roomId;
@@ -387,8 +394,8 @@ export class MatchEngine {
       }
 
       const [room] = await tx<{ id: string }[]>`
-        INSERT INTO rooms (invite_token_hash, host_user_id, difficulty)
-        VALUES (${tokenHash}, ${input.actorUserId}, ${input.difficulty})
+        INSERT INTO rooms (invite_token_hash, host_user_id, difficulty, mode)
+        VALUES (${tokenHash}, ${input.actorUserId}, ${input.difficulty}, ${mode})
         RETURNING id
       `;
       if (!room) throw new Error("Room insert failed");
@@ -409,6 +416,7 @@ export class MatchEngine {
       await tx`UPDATE rooms SET active_match_id = ${match.id} WHERE id = ${room.id}`;
       await this.appendEvent(tx, match.id, "MATCH_CREATED", {
         difficulty: input.difficulty,
+        mode,
         roundNumber: 1,
       });
       await this.completeCommand(tx, input.actorUserId, input.idempotencyKey, {
@@ -439,11 +447,12 @@ export class MatchEngine {
           host_user_id: string;
           active_match_id: string;
           closed_at: string | null;
+          mode: MatchMode;
         }[]
       >`
         -- Keep this weaker than FOR UPDATE. Realtime-session foreign keys take
         -- KEY SHARE on this row after locking the match in the opposite order.
-        SELECT id, host_user_id, active_match_id, closed_at::text
+        SELECT id, host_user_id, active_match_id, closed_at::text, mode
         FROM rooms
         WHERE invite_token_hash = ${tokenHash}
         FOR NO KEY UPDATE
@@ -454,6 +463,13 @@ export class MatchEngine {
           "Invite is invalid or expired",
           404,
         );
+      if (room.mode === "PRACTICE") {
+        throw new DomainError(
+          "ROOM_NOT_FOUND",
+          "Invite is invalid or expired",
+          404,
+        );
+      }
       if (room.host_user_id === input.actorUserId) {
         throw new DomainError(
           "HOST_CANNOT_JOIN_OWN_ROOM",
@@ -701,13 +717,15 @@ export class MatchEngine {
         ORDER BY mp.slot
       `;
       if (
-        participants.length === 2 &&
+        participants.length === (match.mode === "PRACTICE" ? 1 : 2) &&
         participants.every((player) => player.ready && player.language)
       ) {
         if (!participants.every((player) => player.live)) {
           throw new DomainError(
             "INVALID_STATE",
-            "Both players need a live battle link before countdown",
+            match.mode === "PRACTICE"
+              ? "Reconnect the live practice link before starting"
+              : "Both players need a live battle link before countdown",
             409,
           );
         }
@@ -732,6 +750,7 @@ export class MatchEngine {
         if (countdown) {
           await this.appendEvent(tx, input.matchId, "COUNTDOWN_STARTED", {
             startsAt: countdown.starts_at,
+            mode: match.mode,
           });
         }
       }
@@ -744,11 +763,15 @@ export class MatchEngine {
 
   private async lockMatch(tx: Tx, matchId: string): Promise<MatchRow> {
     const [match] = await tx<MatchRow[]>`
-      SELECT id, room_id, round_number, state, difficulty, problem_id, problem_version,
-             problem_title, starts_at::text, finished_at::text, rematch_deadline::text,
-             rematch_created_match_id, winner_user_id, end_reason, records_applied,
-             version::text::bigint AS version
-      FROM matches WHERE id = ${matchId} FOR UPDATE
+      SELECT m.id, m.room_id, r.mode, m.round_number, m.state, m.difficulty,
+             m.problem_id, m.problem_version, m.problem_title, m.starts_at::text,
+             m.finished_at::text, m.rematch_deadline::text,
+             m.rematch_created_match_id, m.winner_user_id, m.end_reason,
+             m.records_applied, m.version::text::bigint AS version
+      FROM matches m
+      JOIN rooms r ON r.id = m.room_id
+      WHERE m.id = ${matchId}
+      FOR UPDATE OF m
     `;
     if (!match)
       throw new DomainError("MATCH_NOT_FOUND", "Match not found", 404);
@@ -814,21 +837,23 @@ export class MatchEngine {
         RETURNING problem_id, problem_version, problem_title
       `;
       if (!advanced) return false;
-      await tx`
-        UPDATE match_participants
-        SET disconnected_at = GREATEST(
-              COALESCE(disconnected_at, ${match.starts_at}::timestamptz),
-              ${match.starts_at}::timestamptz
-            ),
-            reconnect_deadline = GREATEST(
-              COALESCE(disconnected_at, ${match.starts_at}::timestamptz),
-              ${match.starts_at}::timestamptz
-            ) + (${this.options.reconnectGraceSeconds} * interval '1 second'),
-            updated_at = clock_timestamp()
-        WHERE match_id = ${matchId}
-          AND connected = false
-          AND reconnect_deadline IS NULL
-      `;
+      if (match.mode === "DUEL") {
+        await tx`
+          UPDATE match_participants
+          SET disconnected_at = GREATEST(
+                COALESCE(disconnected_at, ${match.starts_at}::timestamptz),
+                ${match.starts_at}::timestamptz
+              ),
+              reconnect_deadline = GREATEST(
+                COALESCE(disconnected_at, ${match.starts_at}::timestamptz),
+                ${match.starts_at}::timestamptz
+              ) + (${this.options.reconnectGraceSeconds} * interval '1 second'),
+              updated_at = clock_timestamp()
+          WHERE match_id = ${matchId}
+            AND connected = false
+            AND reconnect_deadline IS NULL
+        `;
+      }
       await this.appendEvent(tx, matchId, "MATCH_ACTIVE", {
         problem: {
           id: advanced.problem_id,
@@ -873,11 +898,14 @@ export class MatchEngine {
       { now: string }[]
     >`SELECT clock_timestamp()::text AS now`;
     const [match] = await this.sql<MatchRow[]>`
-      SELECT id, room_id, round_number, state, difficulty, problem_id, problem_version,
-             problem_title, starts_at::text, finished_at::text, rematch_deadline::text,
-             rematch_created_match_id, winner_user_id, end_reason, records_applied,
-             version::text::bigint AS version
-      FROM matches WHERE id = ${matchId}
+      SELECT m.id, m.room_id, r.mode, m.round_number, m.state, m.difficulty,
+             m.problem_id, m.problem_version, m.problem_title, m.starts_at::text,
+             m.finished_at::text, m.rematch_deadline::text,
+             m.rematch_created_match_id, m.winner_user_id, m.end_reason,
+             m.records_applied, m.version::text::bigint AS version
+      FROM matches m
+      JOIN rooms r ON r.id = m.room_id
+      WHERE m.id = ${matchId}
     `;
     if (!match || !clock)
       throw new DomainError("MATCH_NOT_FOUND", "Match not found", 404);
@@ -929,6 +957,7 @@ export class MatchEngine {
     return {
       roomId: match.room_id,
       matchId: match.id,
+      mode: match.mode,
       roundNumber: match.round_number,
       difficulty: match.difficulty,
       state: match.state,
@@ -1548,7 +1577,10 @@ export class MatchEngine {
       (player) => player.clerk_user_id === winnerUserId,
     );
     if (winnerUserId && !winner) throw new Error("Winner is not a participant");
-    const appliesRecord = shouldApplyRecord(endReason) && winner !== undefined;
+    const appliesRecord =
+      match.mode === "DUEL" &&
+      shouldApplyRecord(endReason) &&
+      winner !== undefined;
     await tx`
       UPDATE matches
       SET state = 'FINISHED', winner_user_id = ${winnerUserId}, end_reason = ${endReason},
@@ -1592,6 +1624,8 @@ export class MatchEngine {
       winnerSlot: winner?.slot ?? null,
     });
 
+    if (match.mode === "PRACTICE") return true;
+
     assertTransition("FINISHED", "REMATCH_PENDING");
     const [pending] = await tx<{ rematch_deadline: string }[]>`
       UPDATE matches
@@ -1622,6 +1656,13 @@ export class MatchEngine {
         input.matchId,
         input.actorUserId,
       );
+      if (match.mode === "PRACTICE") {
+        throw new DomainError(
+          "INVALID_STATE",
+          "Practice sessions do not use rematches",
+          409,
+        );
+      }
       const reservation = await this.reserveCommand(tx, {
         actorUserId: input.actorUserId,
         idempotencyKey: input.idempotencyKey,
@@ -1791,7 +1832,7 @@ export class MatchEngine {
     matchId: string,
   ): Promise<boolean> {
     const match = await this.lockMatch(tx, matchId);
-    if (match.state !== "ACTIVE") return false;
+    if (match.state !== "ACTIVE" || match.mode === "PRACTICE") return false;
     const participants = await tx<
       {
         clerk_user_id: string;
@@ -1961,7 +2002,8 @@ export class MatchEngine {
         UPDATE match_participants
         SET connected = false,
             disconnected_at = ${presence.disconnected_at}::timestamptz,
-            reconnect_deadline = CASE WHEN ${match.state} = 'ACTIVE'
+            reconnect_deadline = CASE
+              WHEN ${match.state} = 'ACTIVE' AND ${match.mode} = 'DUEL'
               THEN ${presence.disconnected_at}::timestamptz
                 + (${this.options.reconnectGraceSeconds} * interval '1 second')
               ELSE NULL END,
@@ -1972,7 +2014,9 @@ export class MatchEngine {
         slot: participant.slot,
         connected: false,
         graceSeconds:
-          match.state === "ACTIVE" ? this.options.reconnectGraceSeconds : null,
+          match.state === "ACTIVE" && match.mode === "DUEL"
+            ? this.options.reconnectGraceSeconds
+            : null,
       });
     });
   }

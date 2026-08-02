@@ -1,6 +1,9 @@
 # LeetBattle
 
-LeetBattle is a private, two-player coding duel. A host chooses only a difficulty, shares an unlisted invite, and both players receive the same original problem at one server-owned start time. The earliest server-received submission that eventually passes the complete hidden suite wins.
+LeetBattle supports private two-player coding duels and single-player Practice
+Mode. Duels share one server-owned start time and award the earliest accepted
+submission; practice sessions use the same hidden judge without an opponent or
+any change to the player's win/loss record.
 
 This repository is a standalone application. It does not use or modify any sibling game or the shared stats API.
 
@@ -87,7 +90,7 @@ above. See the security boundary below before deploying.
 | `npm test`                 | Run unit and integration tests; Docker/DB suites skip with a stated reason when unavailable |
 | `npm run test:coverage`    | Run tests with V8 coverage                                                                  |
 | `npm run test:e2e:list`    | Discover the opt-in real-browser tests without starting the stack or browser                |
-| `npm run test:e2e`         | Run the environment-gated two-account Chromium duel against the complete real stack         |
+| `npm run test:e2e`         | Run the environment-gated duel and solo-practice Chromium flows against the real stack      |
 | `npm run test:e2e:install` | Install the pinned Playwright Chromium binary                                               |
 | `npm run build`            | Create the production Next.js build                                                         |
 | `npm run build:cloudflare` | Build the OpenNext Worker and scan it for private judge material                            |
@@ -99,15 +102,16 @@ above. See the security boundary below before deploying.
 
 ## Real browser E2E
 
-The Playwright suite is an opt-in production-boundary check. It creates two
-independent browser contexts, signs two existing users into the configured
-Clerk instance with Clerk's official testing helper, and then exercises real
-application APIs, PostgreSQL state, WebSocket updates, Docker-backed Python and
-Java execution, dual accepted hidden-suite submissions, winner ordering,
-rematch, cancellation, and history. Canonical source is imported from the
-private problem bank only by the Node-side test process and typed into Monaco;
-it is never included in an application entry point or client bundle. The suite
-does not enable an application auth bypass or replace the judge.
+The Playwright suite is an opt-in production-boundary check. It signs existing
+users into the configured Clerk instance with Clerk's official testing helper,
+then exercises the real duel and solo-practice paths: application APIs,
+PostgreSQL state, WebSocket updates, Docker-backed Python and Java execution,
+accepted hidden-suite submissions, winner ordering, rematch, cancellation,
+history, draft restoration, and practice record isolation. Canonical source is
+imported from the private problem bank only by the Node-side test process and
+typed into Monaco; it is never included in an application entry point or client
+bundle. The suite does not enable an application auth bypass or replace the
+judge.
 
 Before running it:
 
@@ -149,8 +153,8 @@ Before running it:
    npm run test:e2e
    ```
 
-With `RUN_REAL_E2E` disabled or required account/key values absent, both the
-Clerk setup project and duel test are reported as skipped with the exact
+With `RUN_REAL_E2E` disabled or required account/key values absent, the Clerk
+setup, duel, and practice tests are reported as skipped with the exact
 missing prerequisite. Once explicitly enabled, an unreachable app is also
 reported as a failure; broken database, realtime, or runner behavior discovered
 after sign-in fails the test as well, so infrastructure regressions are not hidden.
@@ -201,11 +205,10 @@ limits, tmpfs budget, and isolated network are all verified. This follows the
 same OpenNext/Wrangler conventions as the sibling `call-sheet` and `newsle`
 games while keeping PostgreSQL as the authoritative match database.
 
-The current Cloudflare account is authenticated, but a live deployment is
-blocked until Workers Paid/Containers access is enabled. A production
-PostgreSQL URL, cache-disabled Hyperdrive resource, Clerk keys, and four
-operator-generated secrets are also required. No partial production stack was
-deployed.
+The production stack is deployed at `leetbattle.cenough.games` with separate
+web, realtime, and private runner Workers. The web Worker is connected to
+Cloudflare Workers Builds on GitHub `main`; shared realtime code and database
+migrations still require coordinated manual release steps.
 
 Follow the copy-paste deployment order, first-deploy secret flow, Custom Domain
 setup, validation, rollback, and troubleshooting guide in
@@ -215,12 +218,13 @@ order is runner, realtime, then web.
 ## Match guarantees
 
 - The problem is selected in a transaction only after two different members have live realtime sessions and independently select a language and ready up.
+- Practice Mode selects from the same sealed catalog after one live player locks a language; accepted practice submissions never update competitive records or history.
 - One database timestamp controls countdown and reveal for both players.
 - Cancellation is lobby-only and forfeit is active-only, so a sealed countdown problem cannot be exposed and rerolled before reveal.
 - One active execution per player, a database-enforced two-second sample rate limit, and a ten-second failed-submit cooldown prevent client bypasses.
 - Winner order is receipt timestamp, then trusted control-plane runtime for equal timestamps, then immutable server sequence. A later accepted result waits while an earlier submission is still in flight.
 - Finalization and win/loss application are transactional and idempotent.
-- A disconnected active player has 60 seconds to reconnect. One absent player forfeits; two absent players produce a no-contest. Accepted in-flight work remains eligible.
+- In duels, a disconnected active player has 60 seconds to reconnect. One absent player forfeits; two absent players produce a no-contest. Accepted in-flight work remains eligible. Practice disconnects preserve the solo attempt without a forfeit deadline.
 - Mutual rematch votes within 30 seconds create one fresh round, reset languages, and avoid the previous problem when another problem exists at that difficulty.
 
 ## Deployment assumptions
