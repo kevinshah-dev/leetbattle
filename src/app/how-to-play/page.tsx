@@ -8,23 +8,23 @@ export const metadata: Metadata = { title: "How to play" };
 const rounds = [
   {
     number: "01",
-    title: "Open a private room",
-    body: "The host chooses Easy, Medium, or Hard and shares the unlisted invite with one friend.",
+    title: "Choose your mode",
+    body: "Practice solo or open a private battle for one friend, then choose Easy, Medium, or Hard.",
   },
   {
     number: "02",
     title: "Choose your loadout",
-    body: "Each player independently selects Python or Java. The problem stays sealed until both players mark ready.",
+    body: "Select Python or Java. A duel waits for both players; a practice run starts when your own loadout is ready.",
   },
   {
     number: "03",
-    title: "Fight on one clock",
-    body: "After 3, 2, 1, FIGHT, both players see the same original problem and authoritative start time.",
+    title: "Reveal on the server clock",
+    body: "After the countdown, the server reveals one original problem at an authoritative start time.",
   },
   {
     number: "04",
     title: "Clear every hidden test",
-    body: "Run published samples freely. Submit against the hidden suite. The earliest accepted submission wins.",
+    body: "Run published samples and submit against the hidden suite. Duels reward the earliest accepted solution; practice leaves your record unchanged.",
   },
 ];
 
@@ -41,8 +41,9 @@ export default function HowToPlayPage() {
             <span>Keep your edge.</span>
           </h1>
           <p>
-            LeetBattle is a focused two-player race. There is no public
-            matchmaking, spectator mode, chat, or leaderboard.
+            LeetBattle supports private two-player races and focused solo
+            practice. There is no public matchmaking, spectator mode, chat, or
+            leaderboard.
           </p>
         </header>
         <section className="round-steps" aria-label="Four steps to play">
@@ -76,10 +77,10 @@ export default function HowToPlayPage() {
                 </dd>
               </div>
               <div>
-                <dt>Winner</dt>
+                <dt>Outcome</dt>
                 <dd>
-                  The earliest server-received accepted solution, with
-                  deterministic tie-breaks.
+                  Duels use the earliest server-received accepted solution with
+                  deterministic tie-breaks. Practice only asks you to pass.
                 </dd>
               </div>
             </dl>
@@ -87,7 +88,7 @@ export default function HowToPlayPage() {
           <PixelPanel label="FAIR PLAY & RECOVERY">
             <dl className="rules-list">
               <div>
-                <dt>Opponent view</dt>
+                <dt>Duel privacy</dt>
                 <dd>
                   Status and aggregate progress only. Source code and judge
                   details stay private.
@@ -96,15 +97,15 @@ export default function HowToPlayPage() {
               <div>
                 <dt>Reconnect</dt>
                 <dd>
-                  Your local draft returns after refresh. Active players have a
-                  60-second grace period.
+                  Your local draft returns after refresh. Duels use a 60-second
+                  grace period; practice disconnects do not become forfeits.
                 </dd>
               </div>
               <div>
                 <dt>Rematch</dt>
                 <dd>
-                  Both players must opt in within 30 seconds. A fresh problem
-                  and language choice follow.
+                  Duels give both players 30 seconds to opt in. Practice offers
+                  a fresh solo run instead.
                 </dd>
               </div>
               <div>
@@ -119,6 +120,9 @@ export default function HowToPlayPage() {
         </div>
         <div className="how-page__cta">
           <ArcadeLink href="/battle/new">Create a battle</ArcadeLink>
+          <ArcadeLink href="/battle/new?mode=practice" tone="cyan">
+            Practice solo
+          </ArcadeLink>
           <ArcadeLink href="/" tone="ghost">
             Back home
           </ArcadeLink>

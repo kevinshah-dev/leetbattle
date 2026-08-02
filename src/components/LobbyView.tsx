@@ -84,6 +84,25 @@ function PlayerSlot({
   );
 }
 
+function PracticeObjective() {
+  return (
+    <div className="practice-objective">
+      <p className="eyebrow">Solo objective</p>
+      <div aria-hidden="true" className="practice-objective__target">
+        <i />
+        <i />
+        <span>&gt;_</span>
+      </div>
+      <h2>Clear the hidden suite.</h2>
+      <p>
+        There is no race against a rival. Submit when your solution is ready;
+        every hidden test must pass.
+      </p>
+      <small>Wins and losses stay unchanged.</small>
+    </div>
+  );
+}
+
 export function LobbyView({ roomCode }: { roomCode: string }) {
   const router = useRouter();
   const { snapshot, error, loading, realtime, refresh, applySnapshot } =
@@ -107,10 +126,11 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
     return error ? (
       <RoomError message={error} />
     ) : (
-      <RoomLoading label="Opening the pre-fight lobby…" />
+      <RoomLoading label="Opening your game lobby…" />
     );
   if (error) return <RoomError message={error} />;
   const currentSnapshot = snapshot;
+  const practice = snapshot.mode === "PRACTICE";
 
   async function command(
     type: "SELECT_LANGUAGE" | "SET_READY",
@@ -153,7 +173,9 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
   async function cancelRoom() {
     if (
       !window.confirm(
-        "Cancel this private room? The invite will close for both players.",
+        practice
+          ? "Cancel this practice session?"
+          : "Cancel this private room? The invite will close for both players.",
       )
     )
       return;
@@ -183,16 +205,23 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
     <main className="lobby-page" id="main-content">
       <header className="room-toolbar">
         <div>
-          <span>ROOM</span>
-          <strong>{snapshot.roomCode}</strong>
+          <span>{practice ? "MODE" : "ROOM"}</span>
+          <strong>{practice ? "PRACTICE" : snapshot.roomCode}</strong>
         </div>
-        <div className="room-toolbar__invite">
-          <label htmlFor="invite-url">Private invite</label>
-          <input id="invite-url" readOnly value={inviteUrl} />
-          <button onClick={copyInvite} type="button">
-            {copied ? "Copied" : "Copy invite"}
-          </button>
-        </div>
+        {practice ? (
+          <div className="room-toolbar__practice">
+            <span>SOLO SESSION</span>
+            <strong>NO OPPONENT · NO RECORD CHANGE</strong>
+          </div>
+        ) : (
+          <div className="room-toolbar__invite">
+            <label htmlFor="invite-url">Private invite</label>
+            <input id="invite-url" readOnly value={inviteUrl} />
+            <button onClick={copyInvite} type="button">
+              {copied ? "Copied" : "Copy invite"}
+            </button>
+          </div>
+        )}
         <StatusLamp
           label={
             realtime === "LIVE"
@@ -206,7 +235,8 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
       </header>
 
       <BattleStrip
-        centerLabel="STANDBY"
+        centerLabel={practice ? "SOLO" : "STANDBY"}
+        mode={snapshot.mode}
         opponent={snapshot.opponent}
         self={snapshot.self}
         state={snapshot.state}
@@ -214,15 +244,27 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
       />
 
       <div className="lobby-content">
-        <section className="lobby-roster" aria-label="Players">
+        <section
+          className={`lobby-roster${practice ? " lobby-roster--practice" : ""}`}
+          aria-label={practice ? "Practice setup" : "Players"}
+        >
           <PlayerSlot player={snapshot.self} self />
-          <div className="versus-divider" aria-hidden="true">
-            <span>VS</span>
-          </div>
-          <PlayerSlot player={snapshot.opponent} />
+          {practice ? (
+            <PracticeObjective />
+          ) : (
+            <>
+              <div className="versus-divider" aria-hidden="true">
+                <span>VS</span>
+              </div>
+              <PlayerSlot player={snapshot.opponent} />
+            </>
+          )}
         </section>
 
-        <PixelPanel className="loadout-panel" label="YOUR LOADOUT">
+        <PixelPanel
+          className="loadout-panel"
+          label={practice ? "PRACTICE LOADOUT" : "YOUR LOADOUT"}
+        >
           <div className="loadout-panel__header">
             <div>
               <p className="eyebrow">Difficulty locked</p>
@@ -267,17 +309,30 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
             <div>
               <StatusLamp
                 label={
-                  snapshot.opponent?.ready
-                    ? "RIVAL READY"
-                    : snapshot.opponent
-                      ? "RIVAL CHOOSING"
-                      : "WAITING FOR RIVAL"
+                  practice
+                    ? realtime === "LIVE"
+                      ? "SOLO LINK READY"
+                      : "LINKING SESSION"
+                    : snapshot.opponent?.ready
+                      ? "RIVAL READY"
+                      : snapshot.opponent
+                        ? "RIVAL CHOOSING"
+                        : "WAITING FOR RIVAL"
                 }
-                tone={snapshot.opponent?.ready ? "cyan" : "dim"}
+                tone={
+                  practice
+                    ? realtime === "LIVE"
+                      ? "cyan"
+                      : "dim"
+                    : snapshot.opponent?.ready
+                      ? "cyan"
+                      : "dim"
+                }
               />
               <p>
-                The server selects and seals one problem after both players lock
-                in.
+                {practice
+                  ? "The server selects and seals one problem when you start."
+                  : "The server selects and seals one problem after both players lock in."}
               </p>
             </div>
             <ArcadeButton
@@ -293,7 +348,9 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
                 ? "Linking live session…"
                 : snapshot.self.ready
                   ? "Unlock loadout"
-                  : "Ready up"}
+                  : practice
+                    ? "Start practice"
+                    : "Ready up"}
             </ArcadeButton>
           </div>
           <p aria-live="assertive" className="form-error">
@@ -308,7 +365,7 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
             onClick={() => void cancelRoom()}
             tone="ghost"
           >
-            Cancel room
+            {practice ? "Cancel practice" : "Cancel room"}
           </ArcadeButton>
         ) : (
           <ArcadeLink href="/" tone="ghost">
@@ -316,8 +373,10 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
           </ArcadeLink>
         )}
         <p>
-          <kbd>Tab</kbd> moves controls <span /> Both players choose
-          independently
+          <kbd>Tab</kbd> moves controls <span />
+          {practice
+            ? " Practice does not change your record"
+            : " Both players choose independently"}
         </p>
       </footer>
     </main>

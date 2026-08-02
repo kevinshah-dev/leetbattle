@@ -211,6 +211,119 @@ integration("PostgreSQL authoritative match engine", () => {
     ).rejects.toMatchObject({ code: "HOST_CANNOT_JOIN_OWN_ROOM" });
   });
 
+  it("runs a solo practice without opponents, records, forfeits, or rematches", async () => {
+    await players();
+    const room = await engine.createRoom({
+      actorUserId: "host",
+      difficulty: "MEDIUM",
+      mode: "PRACTICE",
+      idempotencyKey: key("practice-create"),
+    });
+    const { matchId, roomId } = room.snapshot;
+    expect(room.snapshot).toMatchObject({
+      mode: "PRACTICE",
+      state: "LOBBY",
+      problem: null,
+    });
+    expect(room.snapshot.players).toHaveLength(1);
+
+    await expect(
+      engine.joinRoom({
+        actorUserId: "opponent",
+        inviteToken: room.inviteToken,
+        idempotencyKey: key("practice-join"),
+      }),
+    ).rejects.toMatchObject({ code: "ROOM_NOT_FOUND", status: 404 });
+
+    const firstSession = await engine.connectSession({
+      actorUserId: "host",
+      roomId,
+      matchId,
+    });
+    await engine.setLanguage({
+      actorUserId: "host",
+      matchId,
+      language: "PYTHON",
+      idempotencyKey: key("practice-language"),
+    });
+    const active = await engine.setReady({
+      actorUserId: "host",
+      matchId,
+      ready: true,
+      idempotencyKey: key("practice-ready"),
+    });
+    expect(active).toMatchObject({
+      mode: "PRACTICE",
+      state: "ACTIVE",
+      problem: { id: "medium-one" },
+    });
+
+    await engine.disconnectSession(firstSession.sessionId, "host");
+    expect(await engine.processDueDisconnects()).toBe(0);
+    expect(await engine.getSnapshotByMatch("host", matchId)).toMatchObject({
+      state: "ACTIVE",
+      finishedAt: null,
+    });
+    await engine.connectSession({ actorUserId: "host", roomId, matchId });
+
+    const failedSubmission = await engine.startExecution({
+      actorUserId: "host",
+      matchId,
+      idempotencyKey: key("practice-submit"),
+      kind: "SUBMIT",
+      source: "wrong",
+    });
+    const failed = await engine.completeExecution(failedSubmission.id, wrong);
+    expect(failed).toMatchObject({
+      matchState: "ACTIVE",
+      winnerUserId: null,
+    });
+    expect(failed.cooldownUntil).not.toBeNull();
+    await harness.sql`
+      UPDATE match_participants
+      SET cooldown_until = clock_timestamp() - interval '1 second'
+      WHERE match_id = ${matchId} AND clerk_user_id = 'host'
+    `;
+
+    const acceptedSubmission = await engine.startExecution({
+      actorUserId: "host",
+      matchId,
+      idempotencyKey: key("practice-submit"),
+      kind: "SUBMIT",
+      source: "accepted",
+    });
+    const completed = await engine.completeExecution(
+      acceptedSubmission.id,
+      accepted(3),
+    );
+    expect(completed).toMatchObject({
+      matchState: "FINISHED",
+      winnerUserId: "host",
+    });
+    const final = await engine.getSnapshotByMatch("host", matchId);
+    expect(final).toMatchObject({
+      mode: "PRACTICE",
+      state: "FINISHED",
+      endReason: "ACCEPTED",
+      rematchDeadline: null,
+      winnerUsername: "Host_Player",
+    });
+    expect(final.players[0]?.outcome).toBe("WIN");
+
+    const [record] = await harness.sql<{ wins: number; losses: number }[]>`
+      SELECT wins, losses FROM player_records WHERE clerk_user_id = 'host'
+    `;
+    expect(record).toEqual({ wins: 0, losses: 0 });
+    expect(await history.recent("host")).toEqual([]);
+    await expect(
+      engine.requestRematch({
+        actorUserId: "host",
+        matchId,
+        idempotencyKey: key("practice-rematch"),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_STATE" });
+  });
+
   it(
     "avoids the room-to-match deadlock when join and realtime connect overlap",
     { timeout: 15_000 },

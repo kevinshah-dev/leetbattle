@@ -9,6 +9,7 @@ import {
   createRoom,
   getProfile,
   type Difficulty,
+  type MatchMode,
 } from "./api-client";
 import { ArcadeButton, PixelPanel, StatusLamp } from "./ArcadePrimitives";
 
@@ -38,9 +39,34 @@ const difficulties: Array<{
   },
 ];
 
-export function CreateBattlePanel() {
+const modes: Array<{
+  value: MatchMode;
+  label: string;
+  description: string;
+  marker: string;
+}> = [
+  {
+    value: "DUEL",
+    label: "Private battle",
+    description: "Invite one rival. The result counts toward your record.",
+    marker: "VS",
+  },
+  {
+    value: "PRACTICE",
+    label: "Practice mode",
+    description: "Solve alone. Clear the hidden suite with no record change.",
+    marker: "1P",
+  },
+];
+
+export function CreateBattlePanel({
+  initialMode = "DUEL",
+}: {
+  initialMode?: MatchMode;
+}) {
   const router = useRouter();
   const { isLoaded, isSignedIn } = useUser();
+  const [mode, setMode] = useState<MatchMode>(initialMode);
   const [difficulty, setDifficulty] = useState<Difficulty>("MEDIUM");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
@@ -52,19 +78,25 @@ export function CreateBattlePanel() {
       return;
     }
     void getProfile().then(({ profile }) => {
-      if (!profile) router.replace("/onboarding?returnTo=%2Fbattle%2Fnew");
+      if (!profile) {
+        const returnTo =
+          mode === "PRACTICE" ? "/battle/new?mode=practice" : "/battle/new";
+        router.replace(`/onboarding?returnTo=${encodeURIComponent(returnTo)}`);
+      }
     });
-  }, [isLoaded, isSignedIn, router]);
+  }, [isLoaded, isSignedIn, mode, router]);
 
   async function handleCreate() {
     setCreating(true);
     setError("");
     try {
-      const room = await createRoom(difficulty);
+      const room = await createRoom(difficulty, mode);
       router.push(`/lobby/${room.roomCode}`);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "PROFILE_REQUIRED") {
-        router.push("/onboarding?returnTo=%2Fbattle%2Fnew");
+        const returnTo =
+          mode === "PRACTICE" ? "/battle/new?mode=practice" : "/battle/new";
+        router.push(`/onboarding?returnTo=${encodeURIComponent(returnTo)}`);
         return;
       }
       setError(
@@ -79,11 +111,18 @@ export function CreateBattlePanel() {
   return (
     <div className="create-layout">
       <div className="create-layout__intro">
-        <p className="eyebrow">New private room</p>
-        <h1>Choose the terrain.</h1>
+        <p className="eyebrow">
+          {mode === "PRACTICE" ? "Solo training run" : "New private room"}
+        </p>
+        <h1>
+          {mode === "PRACTICE"
+            ? "Train against the suite."
+            : "Choose the terrain."}
+        </h1>
         <p>
-          You control only the difficulty. The server keeps the problem sealed
-          until both players choose a language and lock in.
+          {mode === "PRACTICE"
+            ? "Pick a difficulty, choose your language, and see whether your solution can clear every hidden test."
+            : "You control only the difficulty. The server keeps the problem sealed until both players choose a language and lock in."}
         </p>
         <div
           className="sealed-problem"
@@ -92,11 +131,36 @@ export function CreateBattlePanel() {
           <span aria-hidden="true" className="sealed-problem__lock" />
           <div>
             <strong>Problem sealed</strong>
-            <small>Reveals after both players are ready</small>
+            <small>
+              {mode === "PRACTICE"
+                ? "Reveals when you start the practice run"
+                : "Reveals after both players are ready"}
+            </small>
           </div>
         </div>
       </div>
-      <PixelPanel className="difficulty-panel" label="SELECT DIFFICULTY">
+      <PixelPanel className="difficulty-panel" label="CONFIGURE GAME">
+        <div aria-label="Game mode" className="mode-options" role="radiogroup">
+          {modes.map((option) => (
+            <button
+              aria-checked={mode === option.value}
+              className="mode-option"
+              key={option.value}
+              onClick={() => setMode(option.value)}
+              role="radio"
+              type="button"
+            >
+              <span aria-hidden="true" className="mode-option__marker">
+                {option.marker}
+              </span>
+              <span>
+                <strong>{option.label}</strong>
+                <small>{option.description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="config-label">Select difficulty</p>
         <div
           className="difficulty-options"
           role="radiogroup"
@@ -133,12 +197,25 @@ export function CreateBattlePanel() {
           ))}
         </div>
         <div className="difficulty-panel__footer">
-          <StatusLamp label="INVITE WILL BE UNLISTED" tone="cyan" />
+          <StatusLamp
+            label={
+              mode === "PRACTICE"
+                ? "SOLO · RECORD UNCHANGED"
+                : "INVITE WILL BE UNLISTED"
+            }
+            tone="cyan"
+          />
           <ArcadeButton
             disabled={creating || !isLoaded || !isSignedIn}
             onClick={handleCreate}
           >
-            {creating ? "Minting room…" : "Create battle"}
+            {creating
+              ? mode === "PRACTICE"
+                ? "Starting practice…"
+                : "Minting room…"
+              : mode === "PRACTICE"
+                ? "Start practice"
+                : "Create battle"}
           </ArcadeButton>
         </div>
         <p aria-live="assertive" className="form-error">

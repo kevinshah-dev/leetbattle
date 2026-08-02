@@ -33,19 +33,22 @@ function formatClock(ms: number) {
 }
 
 function Countdown({
+  mode,
   now,
   startsAt,
 }: {
+  mode: RoomSnapshot["mode"];
   now: number;
   startsAt: string | null;
 }) {
   const remaining = startsAt ? Date.parse(startsAt) - now : 3_000;
   const count = Math.ceil(remaining / 1000);
-  const label = count > 0 ? String(Math.min(3, count)) : "FIGHT!";
+  const actionLabel = mode === "PRACTICE" ? "START!" : "FIGHT!";
+  const label = count > 0 ? String(Math.min(3, count)) : actionLabel;
   return (
     <div
       aria-live="assertive"
-      className={`countdown-overlay${label === "FIGHT!" ? " countdown-overlay--fight" : ""}`}
+      className={`countdown-overlay${label === actionLabel ? " countdown-overlay--fight" : ""}`}
       role="status"
     >
       <div aria-hidden="true" className="countdown-overlay__rays">
@@ -54,10 +57,14 @@ function Countdown({
         <i />
         <i />
       </div>
-      <p>Both players locked</p>
+      <p>
+        {mode === "PRACTICE"
+          ? "Practice loadout locked"
+          : "Both players locked"}
+      </p>
       <strong key={label}>{label}</strong>
       <small>
-        {label === "FIGHT!"
+        {label === actionLabel
           ? "Synchronizing first frame…"
           : "Problem reveal armed"}
       </small>
@@ -156,6 +163,8 @@ function ProblemPane({ problem }: { problem: PublicProblem }) {
 function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
   const results = snapshot.sampleRun?.results || [];
   const submission = snapshot.lastSubmission;
+  const operation = snapshot.latestExecution;
+  const running = operation?.status === "RUNNING";
   return (
     <section aria-label="Judge console" className="judge-console">
       <header>
@@ -164,15 +173,19 @@ function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
           JUDGE CONSOLE
         </span>
         <small>
-          {snapshot.sampleRun?.status === "RUNNING"
-            ? "running samples…"
-            : submission
+          {running
+            ? operation.kind === "RUN"
+              ? "running samples…"
+              : "judging hidden tests…"
+            : operation?.kind === "SUBMIT" && submission
               ? submission.verdict.replaceAll("_", " ")
-              : "ready"}
+              : operation?.kind === "RUN"
+                ? "samples complete"
+                : "ready"}
         </small>
       </header>
       <div aria-live="polite" className="judge-console__body">
-        {snapshot.sampleRun?.status === "RUNNING" ? (
+        {running ? (
           <div className="console-running">
             <span className="pixel-loader" aria-hidden="true">
               <i />
@@ -181,9 +194,23 @@ function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
               <i />
               <i />
             </span>
-            <p>Executing published samples in an isolated runner…</p>
+            <p>
+              {operation.kind === "RUN"
+                ? "Executing published samples in an isolated runner…"
+                : "Judging your solution against the hidden suite…"}
+            </p>
           </div>
-        ) : results.length > 0 ? (
+        ) : operation?.kind === "SUBMIT" && submission ? (
+          <div
+            className={`submission-line submission-line--${submission.verdict.toLowerCase()}`}
+          >
+            <strong>{submission.verdict.replaceAll("_", " ")}</strong>
+            <p>{submission.message}</p>
+            <span>
+              {submission.passed}/{submission.total} hidden tests
+            </span>
+          </div>
+        ) : operation?.kind === "RUN" && results.length > 0 ? (
           <div className="sample-results">
             {results.map((result, index) => (
               <div
@@ -204,20 +231,11 @@ function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
               </div>
             ))}
           </div>
-        ) : submission ? (
-          <div
-            className={`submission-line submission-line--${submission.verdict.toLowerCase()}`}
-          >
-            <strong>{submission.verdict.replaceAll("_", " ")}</strong>
-            <p>{submission.message}</p>
-            <span>
-              {submission.passed}/{submission.total} hidden tests
-            </span>
-          </div>
         ) : (
           <p className="console-placeholder">
             <span>&gt;</span> Run published samples or submit against the hidden
-            suite. Opponent output stays private.
+            suite.
+            {snapshot.mode === "DUEL" && " Opponent output stays private."}
           </p>
         )}
       </div>
@@ -236,7 +254,9 @@ function ActivityFeed({ snapshot }: { snapshot: RoomSnapshot }) {
       <ol aria-live="polite">
         {items.length === 0 ? (
           <li className="activity-feed__empty">
-            The pit is quiet. Start coding.
+            {snapshot.mode === "PRACTICE"
+              ? "Your practice log is ready. Start coding."
+              : "The pit is quiet. Start coding."}
           </li>
         ) : (
           items.map((item) => (
@@ -271,12 +291,17 @@ function ResultOverlay({
   snapshot: RoomSnapshot;
 }) {
   const result = snapshot.result;
+  const practice = snapshot.mode === "PRACTICE";
+  const practiceComplete = practice && result?.endReason === "ACCEPTED";
   const outcome =
     result?.outcome ||
     (snapshot.state === "NO_CONTEST" ? "NO_CONTEST" : "DRAW");
   const forfeited = result?.endReason === "FORFEIT";
-  const title =
-    outcome === "WIN"
+  const title = practice
+    ? practiceComplete
+      ? "PRACTICE COMPLETE"
+      : "PRACTICE ENDED"
+    : outcome === "WIN"
       ? "VICTORY"
       : outcome === "LOSS"
         ? forfeited
@@ -311,22 +336,34 @@ function ResultOverlay({
         <span />
       </div>
       <div className="result-card">
-        <p className="eyebrow">Round complete // {reason}</p>
+        <p className="eyebrow">
+          {`${practice ? "Solo run" : "Round complete"} // ${reason}`}
+        </p>
         <h1 id="result-title">{title}</h1>
         <p className="result-card__summary">
-          {outcome === "WIN" &&
+          {practice
+            ? practiceComplete
+              ? "Every hidden test passed. Your competitive record was not changed."
+              : "This solo session ended without changing your competitive record."
+            : null}
+          {!practice &&
+            outcome === "WIN" &&
             (forfeited
               ? "Your rival did not return before the reconnect window closed."
               : "Your accepted submission landed first.")}
-          {outcome === "LOSS" &&
+          {!practice &&
+            outcome === "LOSS" &&
             (forfeited
               ? "The server recorded this round as a forfeit."
               : `${result?.winnerUsername || "Your rival"} cleared the hidden suite first.`)}
-          {outcome === "DRAW" &&
+          {!practice &&
+            outcome === "DRAW" &&
             "Neither player takes a win or loss from this round."}
-          {outcome === "CANCELLED" &&
+          {!practice &&
+            outcome === "CANCELLED" &&
             "The room closed before the battle began. No record changed."}
-          {outcome === "NO_CONTEST" &&
+          {!practice &&
+            outcome === "NO_CONTEST" &&
             "The round ended without changing either record."}
         </p>
         <dl className="result-stats">
@@ -351,7 +388,7 @@ function ResultOverlay({
             </dd>
           </div>
         </dl>
-        {snapshot.rematchDeadline && rematchSeconds > 0 && (
+        {!practice && snapshot.rematchDeadline && rematchSeconds > 0 && (
           <div className="rematch-box">
             <div>
               <span>REMATCH WINDOW</span>
@@ -377,9 +414,15 @@ function ResultOverlay({
           <ArcadeLink href="/" tone="ghost">
             Return home
           </ArcadeLink>
-          <ArcadeLink href="/history" tone="cyan">
-            Match history
-          </ArcadeLink>
+          {practice ? (
+            <ArcadeLink href="/battle/new?mode=practice" tone="cyan">
+              Practice another
+            </ArcadeLink>
+          ) : (
+            <ArcadeLink href="/history" tone="cyan">
+              Match history
+            </ArcadeLink>
+          )}
         </div>
       </div>
     </div>
@@ -414,6 +457,7 @@ function BattleWorkspace({
     "RUN" | "SUBMIT" | "REMATCH" | "FORFEIT" | null
   >(null);
   const [actionError, setActionError] = useState("");
+  const practice = snapshot.mode === "PRACTICE";
 
   useEffect(() => {
     if (snapshot.state === "LOBBY")
@@ -421,7 +465,12 @@ function BattleWorkspace({
   }, [router, snapshot.roomCode, snapshot.state]);
 
   const active = snapshot.state === "ACTIVE";
-  const elapsed = snapshot.startsAt ? now - Date.parse(snapshot.startsAt) : 0;
+  const elapsedEnd = snapshot.finishedAt
+    ? Date.parse(snapshot.finishedAt)
+    : now;
+  const elapsed = snapshot.startsAt
+    ? elapsedEnd - Date.parse(snapshot.startsAt)
+    : 0;
   const cooldownMs = snapshot.self.cooldownUntil
     ? Math.max(0, Date.parse(snapshot.self.cooldownUntil) - now)
     : 0;
@@ -498,7 +547,9 @@ function BattleWorkspace({
   async function forfeit() {
     if (
       !window.confirm(
-        "Forfeit this active match? This records a loss and cannot be undone.",
+        practice
+          ? "End this practice session? Your record will not change."
+          : "Forfeit this active match? This records a loss and cannot be undone.",
       )
     )
       return;
@@ -526,8 +577,12 @@ function BattleWorkspace({
     snapshot.state === "COUNTDOWN"
       ? "ARMED"
       : snapshot.state === "ACTIVE"
-        ? "LIVE"
-        : "ROUND END";
+        ? practice
+          ? "PRACTICE"
+          : "LIVE"
+        : practice
+          ? "RUN END"
+          : "ROUND END";
   const finished = [
     "FINISHED",
     "REMATCH_PENDING",
@@ -543,8 +598,8 @@ function BattleWorkspace({
       <header className="battle-toolbar">
         <BrandMark compact />
         <div className="battle-toolbar__room">
-          <span>ROOM</span>
-          <strong>{snapshot.roomCode}</strong>
+          <span>{practice ? "MODE" : "ROOM"}</span>
+          <strong>{practice ? "PRACTICE" : snapshot.roomCode}</strong>
         </div>
         <div className="battle-toolbar__right">
           <StatusLamp
@@ -564,7 +619,7 @@ function BattleWorkspace({
               onClick={forfeit}
               type="button"
             >
-              Forfeit
+              {practice ? "End practice" : "Forfeit"}
             </button>
           )}
           <ClerkAuthControls compact />
@@ -573,6 +628,7 @@ function BattleWorkspace({
 
       <BattleStrip
         centerLabel={centerLabel}
+        mode={snapshot.mode}
         opponent={snapshot.opponent}
         self={snapshot.self}
         state={snapshot.state}
@@ -580,7 +636,11 @@ function BattleWorkspace({
       />
 
       {snapshot.state === "COUNTDOWN" ? (
-        <Countdown now={now} startsAt={snapshot.startsAt} />
+        <Countdown
+          mode={snapshot.mode}
+          now={now}
+          startsAt={snapshot.startsAt}
+        />
       ) : snapshot.problem ? (
         <div className="battle-workspace">
           <ProblemPane problem={snapshot.problem} />
@@ -636,7 +696,13 @@ function BattleWorkspace({
           <ActivityFeed snapshot={snapshot} />
         </div>
       ) : (
-        <RoomLoading label="The server is sealing both players’ problem…" />
+        <RoomLoading
+          label={
+            practice
+              ? "The server is sealing your practice problem…"
+              : "The server is sealing both players’ problem…"
+          }
+        />
       )}
 
       <footer className="battle-statusbar">

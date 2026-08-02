@@ -1,6 +1,10 @@
 # LeetBattle design system
 
-LeetBattle is a private two-player coding duel for people who want the pressure of an arcade final round without sacrificing a precise, readable workspace. The product should feel hand-built from circuit boards, tournament cabinets, and compiler output—not like a neon analytics dashboard.
+LeetBattle is a coding arena for people who want either the pressure of a
+private arcade duel or a focused solo practice run without sacrificing a
+precise, readable workspace. The product should feel hand-built from circuit
+boards, tournament cabinets, and compiler output—not like a neon analytics
+dashboard.
 
 ## Palette
 

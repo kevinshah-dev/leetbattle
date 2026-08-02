@@ -47,6 +47,7 @@ export class HistoryService {
              GREATEST(0, EXTRACT(EPOCH FROM (m.finished_at - m.starts_at)))::float8 AS duration_seconds,
              m.end_reason
       FROM matches m
+      JOIN rooms room ON room.id = m.room_id AND room.mode = 'DUEL'
       JOIN match_participants self
         ON self.match_id = m.id AND self.clerk_user_id = ${actorUserId}
       JOIN match_participants opponent

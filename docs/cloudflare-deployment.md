@@ -156,6 +156,9 @@ Keep these invariants intact:
    storage, Hyperdrive resource settings, or other backing-resource state. Keep
    every resource referenced by a retained Worker version for the full rollback
    window.
+9. `src/server/match/match-engine.ts` is bundled into both the web and realtime
+   Workers. Deploy realtime before web whenever this shared match code changes,
+   even if no file under `cloudflare/realtime/` changed.
 
 ## Repository deployment map
 
@@ -1111,6 +1114,12 @@ Do not let separate automatic and manual writers race for the same production
 Worker. Each successful deployment becomes the active version regardless of
 which path produced it.
 
+When Git is configured to auto-deploy only the web Worker, a coordinated shared
+match release uses this order: apply additive database migrations, manually
+deploy realtime from the exact release commit, then merge that same commit to
+the production branch and let Workers Builds deploy web. The private runner does
+not need a release when its code and execution contract are unchanged.
+
 ## 8. Production validation
 
 ### Control-plane inventory
@@ -1446,6 +1455,11 @@ version brings back its code, static assets, bindings, compatibility settings,
 and secret binding values. PostgreSQL, Durable Object storage, and the resources
 behind those bindings retain their current state. Apply these rules:
 
+- After migration `003_practice_mode` has accepted Practice traffic, never roll
+  the web or realtime Worker back to a version from before Practice Mode. Those
+  versions do not understand `rooms.mode` and can misclassify solo sessions as
+  competitive matches. Pause new games and ship a forward fix from a
+  Practice-aware version instead.
 - Roll back only the failed component when its contract is unchanged.
 - For a coordinated contract regression, roll back the caller first (web), then
   realtime or runner. This stops new calls that expect the bad downstream

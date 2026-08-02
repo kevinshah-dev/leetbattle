@@ -147,9 +147,9 @@ export function HomeExperience() {
             <span>Strike first.</span>
           </h1>
           <p className="landing__lede">
-            Pick a difficulty, invite one friend, and race on the same original
-            challenge. The first solution through every hidden test lands the
-            final hit.
+            Invite one friend for a head-to-head coding duel, or enter Practice
+            Mode solo. Either way, the goal is the same: clear every hidden
+            test.
           </p>
           <div className="landing__actions">
             {isLoaded && isSignedIn ? (
@@ -173,6 +173,31 @@ export function HomeExperience() {
                   type="button"
                 >
                   <span>Create battle</span>
+                </button>
+              </SignInButton>
+            )}
+            {isLoaded && isSignedIn ? (
+              <ArcadeLink
+                href={
+                  profile
+                    ? "/battle/new?mode=practice"
+                    : "/onboarding?returnTo=%2Fbattle%2Fnew%3Fmode%3Dpractice"
+                }
+                tone="cyan"
+              >
+                Practice solo
+              </ArcadeLink>
+            ) : (
+              <SignInButton
+                fallbackRedirectUrl={returnUrl}
+                forceRedirectUrl={returnUrl}
+                mode="modal"
+              >
+                <button
+                  className="arcade-button arcade-button--cyan"
+                  type="button"
+                >
+                  <span>Practice solo</span>
                 </button>
               </SignInButton>
             )}
@@ -232,6 +257,27 @@ export function HomeExperience() {
                     mode="modal"
                   >
                     <button type="button">Create a private battle</button>
+                  </SignInButton>
+                )}
+              </li>
+              <li>
+                {isLoaded && isSignedIn ? (
+                  <a
+                    href={
+                      profile
+                        ? "/battle/new?mode=practice"
+                        : "/onboarding?returnTo=%2Fbattle%2Fnew%3Fmode%3Dpractice"
+                    }
+                  >
+                    Start a solo practice
+                  </a>
+                ) : (
+                  <SignInButton
+                    fallbackRedirectUrl={returnUrl}
+                    forceRedirectUrl={returnUrl}
+                    mode="modal"
+                  >
+                    <button type="button">Start a solo practice</button>
                   </SignInButton>
                 )}
               </li>

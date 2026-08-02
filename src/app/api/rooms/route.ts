@@ -17,6 +17,7 @@ export const dynamic = "force-dynamic";
 const createRoomInput = z
   .object({
     difficulty: z.enum(["EASY", "MEDIUM", "HARD"]),
+    mode: z.enum(["DUEL", "PRACTICE"]).default("DUEL"),
     idempotencyKey: z.string().min(1).max(200),
   })
   .strict();
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
       return json(
         {
           roomCode: created.inviteToken,
-          inviteUrl: snapshot.inviteUrl!,
+          ...(snapshot.inviteUrl ? { inviteUrl: snapshot.inviteUrl } : {}),
           snapshot,
         },
         { status: 201 },

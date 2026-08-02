@@ -4,7 +4,11 @@ The Next.js application authenticates with Clerk, then passes the authenticated 
 
 ## Persistence and concurrency
 
-PostgreSQL is the source of truth. `db/migrations/001_initial.sql` stores profiles, case-insensitive usernames, room membership, matches, participants, source-hash-only execution summaries, rematch votes, events, command receipts, realtime sessions, and records. Important mutations lock the match row and run in one transaction.
+PostgreSQL is the source of truth. The ordered files in `db/migrations/` store
+profiles, case-insensitive usernames, room mode and membership, matches,
+participants, source-hash-only execution summaries, rematch votes, events,
+command receipts, realtime sessions, and records. Important mutations lock the
+match row and run in one transaction.
 
 - Every client mutation has an idempotency key bound to actor, command type, match, and canonical payload hash.
 - Match events increment the persisted match version and receive a timestamp strictly later than the preceding event timestamp in the same transaction.
@@ -15,11 +19,26 @@ PostgreSQL is the source of truth. `db/migrations/001_initial.sql` stores profil
 
 ## Match lifecycle
 
-The persisted lifecycle is `LOBBY → COUNTDOWN → ACTIVE → FINISHED → REMATCH_PENDING`. Ready-up requires a fresh persisted realtime session, and the selected problem is chosen only in the transaction that observes two live, ready players with fixed languages. Countdown events contain only `startsAt`; snapshots and events omit the problem until server time activates the match. Once selection begins, cancellation and forfeit are unavailable until the match is active, preventing a sealed problem from becoming a pre-reveal reroll oracle.
+Duels use `LOBBY → COUNTDOWN → ACTIVE → FINISHED → REMATCH_PENDING`.
+Practice sessions use the same lifecycle through `FINISHED` and stop there.
+Ready-up requires a fresh persisted realtime session, and the selected problem
+is chosen only in the transaction that observes all required participants—two
+for a duel or one for practice—live, ready, and holding a fixed language.
+Countdown events contain only `startsAt`; snapshots and events omit the problem
+until server time activates the match. Once selection begins, cancellation is
+unavailable until the match is active, preventing a sealed problem from
+becoming a pre-reveal reroll oracle.
 
 Incorrect submissions create a ten-second database cooldown. Infrastructure failures receive one safe retry and no cooldown. Sample runs are rate-limited to one every two seconds and never update the opponent-visible hidden-test progress.
 
-A room can have exactly two service-assigned slots. Multiple realtime sessions per player are supported. The final session disconnect starts a persisted 60-second deadline measured from the explicit close or last heartbeat; reconnect clears it. A single expired disconnect forfeits to a connected opponent, while two expired disconnects produce a no-contest. Pending submissions delay disconnect resolution so a valid in-flight acceptance remains eligible.
+A duel room can have exactly two service-assigned slots; a practice room has one
+and rejects joins. Multiple realtime sessions per player are supported. In a
+duel, the final session disconnect starts a persisted 60-second deadline
+measured from the explicit close or last heartbeat; reconnect clears it. A
+single expired disconnect forfeits to a connected opponent, while two expired
+disconnects produce a no-contest. Practice disconnects preserve the solo
+attempt without starting a forfeit deadline. Pending duel submissions delay
+disconnect resolution so a valid in-flight acceptance remains eligible.
 
 Both players may cast one persisted rematch vote during the 30-second window. The second vote creates one new round through a unique `(room_id, round_number)` constraint, copies membership only, and resets language, readiness, problem, execution, and progress.
 

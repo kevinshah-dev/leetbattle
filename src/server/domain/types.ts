@@ -4,6 +4,9 @@ export type Difficulty = (typeof DIFFICULTIES)[number];
 export const LANGUAGES = ["PYTHON", "JAVA"] as const;
 export type Language = (typeof LANGUAGES)[number];
 
+export const MATCH_MODES = ["DUEL", "PRACTICE"] as const;
+export type MatchMode = (typeof MATCH_MODES)[number];
+
 export const MATCH_STATES = [
   "LOBBY",
   "COUNTDOWN",
@@ -77,6 +80,7 @@ export interface PlayerSnapshot {
 export interface MatchSnapshot {
   roomId: string;
   matchId: string;
+  mode: MatchMode;
   roundNumber: number;
   difficulty: Difficulty;
   state: MatchState;
