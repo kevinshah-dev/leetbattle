@@ -1,6 +1,7 @@
 export function generatePythonHarness(
   functionName: string,
   maxCapturedBytes: number,
+  solutionPath = "/workspace/solution.py",
 ): string {
   return `import contextlib
 import io
@@ -45,7 +46,7 @@ def emit(payload):
 capture = CappedWriter()
 try:
     with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(capture):
-        spec = importlib.util.spec_from_file_location("solution", "/workspace/solution.py")
+        spec = importlib.util.spec_from_file_location("solution", ${JSON.stringify(solutionPath)})
         if spec is None or spec.loader is None:
             raise RuntimeError()
         module = importlib.util.module_from_spec(spec)

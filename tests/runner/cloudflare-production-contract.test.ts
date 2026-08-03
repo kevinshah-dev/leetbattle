@@ -16,183 +16,170 @@ function runnerFile(path: string): string {
 
 const dockerfile = runnerFile("Dockerfile");
 const dockerignore = runnerFile(".dockerignore");
-const boot = runnerFile("container/boot-rootless-docker.sh");
 const supervisor = runnerFile("container/run-judge.sh");
-const isolationProbe = runnerFile("container/verify-inner-isolation.sh");
-const compileInner = runnerFile("container/compile-inner.sh");
-const runInner = runnerFile("container/run-inner.sh");
+const submissionGuard = runnerFile("container/submission-guard.c");
 const adapter = runnerFile("src/sandbox-adapter.ts");
 const wrangler = runnerFile("wrangler.jsonc");
 
 describe("Cloudflare production runner contract (no Docker required)", () => {
-  it("pins every external image and imports the judge rootfs without runtime network access", () => {
+  it("pins the Sandbox VM and both language runtimes without nested Docker", () => {
     const imageSources = [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].map(
       (match) => match[1]!,
     );
-    const externalImages = imageSources.filter(
-      (source) => source !== "judge-rootfs",
-    );
-    expect(externalImages.length).toBeGreaterThanOrEqual(5);
-    for (const source of externalImages) {
+    expect(imageSources).toHaveLength(4);
+    for (const source of imageSources) {
       expect(source).toMatch(/^docker\.io\/.+@sha256:[0-9a-f]{64}$/);
     }
-    expect(dockerfile).toContain("docker:29.6.2-dind-rootless@sha256:");
-    expect(dockerfile).toContain("cloudflare/sandbox:0.12.4-musl@sha256:");
-    expect(dockerfile).toContain('ENV SANDBOX_VERSION="0.12.4"');
-    expect(dockerfile).toContain("apk add --no-cache bash coreutils curl jq");
-    expect(dockerfile).toMatch(/--exclude=\.\/(?:dev|proc|sys|tmp)\/\*/);
-    expect(boot).toContain('docker import "$ROOTFS_ARCHIVE"');
-    expect(boot).toContain('sha256sum "$ROOTFS_ARCHIVE"');
-    expect(`${boot}\n${supervisor}`).not.toMatch(/\bdocker\s+(?:pull|build)\b/);
-    expect(supervisor).toContain("--pull=never");
-    for (const buildInput of [
-      "!container/",
-      "!container/boot-rootless-docker.sh",
-      "!container/run-judge.sh",
-      "!container/compile-inner.sh",
-      "!container/run-inner.sh",
-      "!container/verify-inner-isolation.sh",
-    ]) {
-      expect(dockerignore).toContain(buildInput);
-    }
+    expect(dockerfile).toContain("cloudflare/sandbox:0.12.4@sha256:");
+    expect(dockerfile).toContain("eclipse-temurin:21.0.8_9-jdk-jammy@sha256:");
+    expect(dockerfile).toContain("ARG PYTHON_VERSION=3.13.5");
+    expect(dockerfile).toContain("ARG PYTHON_SHA256=");
+    expect(dockerfile).toContain('ENTRYPOINT ["/container-server/sandbox"]');
+    expect(dockerfile).not.toMatch(/docker:(?:dind|\d)|dockerd|judge-rootfs/);
+    expect(`${dockerfile}\n${supervisor}`).not.toMatch(/\bdocker\s/);
+    expect(dockerignore).toContain("!container/run-judge.sh");
+    expect(dockerignore).toContain("!container/submission-guard.c");
+    expect(dockerignore).not.toContain("boot-rootless-docker.sh");
   });
 
-  it("keeps the daemon rootless and withholds readiness until fail-closed preflight passes", () => {
-    expect(boot).toContain("dockerd-entrypoint.sh dockerd");
-    expect(boot).toContain("--iptables=false");
-    expect(boot).toContain("--ip6tables=false");
-    expect(boot).toContain("--bridge=none");
-    expect(boot).toContain("'{{.CgroupVersion}}'");
-    expect(boot).toContain('"name=rootless"');
-    const probeIndex = boot.indexOf("/opt/leetbattle/verify-inner-isolation");
-    const readyIndex = boot.indexOf('mv -f "$ready_tmp" "$READY_FILE"');
-    expect(probeIndex).toBeGreaterThan(0);
-    expect(readyIndex).toBeGreaterThan(probeIndex);
+  it("uses one fresh internet-disabled Sandbox VM and destroys it after every execution", () => {
+    expect(adapter).toContain("override enableInternet = false");
+    expect(adapter).toContain("`judge-${crypto.randomUUID()}`");
+    expect(adapter).toContain("keepAlive: false");
+    expect(adapter).toContain('sleepAfter: "1m"');
+    expect(adapter).toContain("sandbox.startProcess(TRUSTED_COMMAND");
+    expect(adapter).toContain("process.waitForExit(");
+    expect(adapter).toContain('judgeProcess.kill("SIGKILL")');
+    expect(adapter).toContain("disposeRpcValue(completed)");
+    expect(adapter).toContain("disposeRpcValue(logs)");
+    expect(adapter).toContain("disposeRpcValue(judgeProcess)");
+    expect(adapter).toContain("withDeadline(sandbox.destroy()");
   });
 
-  it("proves inner identity, cgroups, read-only mounts, and an isolated network before execution", () => {
-    for (const requiredCheck of [
-      'id -u)" = "65532"',
-      'id -g)" = "65532"',
-      "^NoNewPrivs:",
-      "CapEff",
-      "^Seccomp:",
-      "mount_has_option / ro",
-      "/sys/fs/cgroup/memory.max",
-      "/sys/fs/cgroup/pids.max",
-      "/sys/fs/cgroup/cpu.max",
-      "/sys/class/net/*",
-      '[ "$interface_name" = "lo" ]',
-      "127.0.0.1",
-      "/var/run/docker.sock",
-      "/run/user/1000/docker.sock",
-      "unexpected-writable-mount",
-      "/proc/1/status",
+  it("drops submission privileges and installs hard process limits before either runtime", () => {
+    for (const requiredSetting of [
+      "--reuid=65532",
+      "--regid=65532",
+      "--clear-groups",
+      "--no-new-privs",
+      "--bounding-set=-all",
+      "--inh-caps=-all",
+      "--ambient-caps=-all",
+      '"--cpu=$compile_cpu_seconds:$compile_cpu_seconds"',
+      '"--cpu=$runtime_cpu_seconds:$runtime_cpu_seconds"',
+      '"--nproc=$LEETBATTLE_MAX_PROCESSES:$LEETBATTLE_MAX_PROCESSES"',
+      '"--as=$python_address_space_bytes:$python_address_space_bytes"',
+      "--nofile=128:128",
+      "--core=0:0",
+      "/usr/bin/setsid",
+      "/usr/bin/timeout",
     ]) {
-      expect(isolationProbe).toContain(requiredCheck);
+      expect(supervisor).toContain(requiredSetting);
     }
-    expect(compileInner.indexOf("verify-inner-isolation")).toBeLessThan(
-      compileInner.indexOf("javac"),
+    expect(supervisor).toContain('kill -KILL -- "-$active_group_pid"');
+    expect(supervisor).toContain('chmod 0400 "$WORKSPACE/cases.ndjson"');
+    expect(supervisor).toContain('chmod 0555 "$WORKSPACE"');
+    expect(supervisor).toContain("readonly PYTHON_RUNTIME_OVERHEAD_MB=64");
+  });
+
+  it("places a fail-closed seccomp boundary around compilation and execution", () => {
+    expect(dockerfile).toContain("libseccomp-dev");
+    expect(dockerfile).toContain("-Werror=format-security");
+    expect(dockerfile).toContain(
+      "COPY --from=guard-builder /tmp/submission-guard /opt/leetbattle/submission-guard",
     );
-    expect(runInner.indexOf("verify-inner-isolation")).toBeLessThan(
-      runInner.indexOf("/submission/harness.py"),
+    expect(dockerfile).toContain(
+      "ldd /opt/leetbattle/submission-guard",
     );
+
+    expect(supervisor).toContain(
+      'readonly SUBMISSION_GUARD="/opt/leetbattle/submission-guard"',
+    );
+    expect(supervisor.match(/"\$SUBMISSION_GUARD"/g)).toHaveLength(2);
+    for (const environment of [
+      '"${compile_environment[@]}"',
+      '"${runtime_environment[@]}"',
+    ]) {
+      expect(supervisor.indexOf(environment)).toBeLessThan(
+        supervisor.indexOf('"$SUBMISSION_GUARD"', supervisor.indexOf(environment)),
+      );
+    }
+
+    for (const requiredControl of [
+      "getresuid",
+      "getresgid",
+      "getgroups",
+      "SYS_capget",
+      "PR_CAPBSET_READ",
+      "PR_SET_NO_NEW_PRIVS",
+      "PR_SET_DUMPABLE",
+      "SYS_close_range",
+      "SCMP_FLTATR_ACT_BADARCH",
+      "SCMP_ACT_KILL_PROCESS",
+      "SCMP_ACT_ERRNO(EPERM)",
+      '"socket"',
+      '"connect"',
+      '"socketcall"',
+      '"io_uring_setup"',
+      '"pidfd_getfd"',
+      "execv(argv[1]",
+    ]) {
+      expect(submissionGuard).toContain(requiredControl);
+    }
+    expect(submissionGuard).not.toMatch(/\b(system|popen|execvp|execlp)\s*\(/);
   });
 
-  it("runs submissions with no network, no capabilities, immutable inputs, and no hidden-suite mount", () => {
-    for (const requiredArgument of [
-      "--read-only",
-      "--network=none",
-      "--user=65532:65532",
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges=true",
-      "--pids-limit=",
-      "--memory=",
-      "--memory-swap=",
-      "--cpus=1",
-      "readonly",
-    ]) {
-      expect(supervisor).toContain(requiredArgument);
-    }
+  it("keeps hidden expected values in the Worker and passes only case arguments over stdin", () => {
+    expect(adapter).toContain("JSON.stringify({ args: judgeCase.args })");
+    expect(adapter).toContain("compareJudgeOutput(");
     expect(supervisor).toContain('< "$WORKSPACE/cases.ndjson"');
-    expect(supervisor).not.toMatch(/--mount=.*cases\.ndjson/);
-    expect(supervisor).not.toContain("/var/run/docker.sock");
-    expect(supervisor).not.toMatch(/--mount=.*\/run\/user\/1000\/docker\.sock/);
-    expect(adapter).toContain('"/submission/solution.py"');
+    expect(supervisor).not.toMatch(/eval|source\s+\$|bash\s+-c/);
+    expect(adapter).toContain("sandbox.writeFile(`${WORKSPACE}/${sourceName}`");
   });
 
-  it("bounds aggregate writable filesystems, including Java handoff and shared memory", () => {
-    expect(supervisor).toContain("--opt=type=tmpfs");
-    expect(supervisor).toContain("--opt=device=tmpfs");
-    expect(supervisor).toContain(
-      "total_writable_bytes -\n    shm_bytes -\n    tmp_bytes -\n    job_workspace_bytes",
-    );
-    expect(supervisor).toContain('--shm-size="$shm_bytes"');
-    expect(supervisor).toContain(
-      '--tmpfs="/workspace:rw,nosuid,nodev,noexec,size=$job_workspace_bytes',
-    );
-    expect(supervisor).toContain(
-      '--tmpfs="/tmp:rw,nosuid,nodev,noexec,size=$tmp_bytes',
-    );
-    expect(supervisor).toContain(
-      '--env="LEETBATTLE_EXPECT_BUILD_BYTES=$build_bytes"',
-    );
-    for (const mount of ["/workspace", "/tmp", "/dev/shm", "/build"]) {
-      expect(isolationProbe).toContain(mount);
+  it("bounds compiler, runtime, output, source, process, and workspace inputs", () => {
+    for (const variable of [
+      "LEETBATTLE_COMPILE_WALL_MS",
+      "LEETBATTLE_COMPILE_CPU_MS",
+      "LEETBATTLE_RUN_CPU_MS",
+      "LEETBATTLE_RUN_WALL_MS",
+      "LEETBATTLE_MEMORY_MB",
+      "LEETBATTLE_MAX_PROCESSES",
+      "LEETBATTLE_MAX_OUTPUT_BYTES",
+      "LEETBATTLE_MAX_WORKSPACE_MB",
+    ]) {
+      expect(adapter).toContain(variable);
+      expect(supervisor).toContain(variable);
     }
-    expect(isolationProbe).toContain("aggregate-writable-limit");
-    expect(isolationProbe).toContain("LEETBATTLE_EXPECT_WRITABLE_BYTES");
-    expect(isolationProbe).toContain("/etc/resolv.conf");
-    expect(isolationProbe).toContain("/etc/hostname");
-    expect(isolationProbe).toContain("/etc/hosts");
-  });
-
-  it("uses separate compiler CPU/wall and runtime CPU/wall budgets", () => {
-    expect(adapter).toContain("LEETBATTLE_COMPILE_WALL_MS");
-    expect(adapter).toContain("LEETBATTLE_COMPILE_CPU_MS");
-    expect(adapter).toContain("LEETBATTLE_RUN_CPU_MS");
-    expect(adapter).toContain("LEETBATTLE_RUN_WALL_MS");
+    expect(adapter).toContain("MAX_CASE_INPUT_BYTES");
     expect(supervisor).toContain(
-      '--ulimit="cpu=$compile_cpu_seconds:$compile_cpu_seconds"',
+      'runtime_output_bytes="$((LEETBATTLE_MAX_OUTPUT_BYTES + 1))"',
     );
     expect(supervisor).toContain(
-      '--ulimit="cpu=$runtime_cpu_seconds:$runtime_cpu_seconds"',
+      'head -c "$LEETBATTLE_MAX_OUTPUT_BYTES" "$protocol_file"',
     );
-    expect(compileInner).toContain("LEETBATTLE_COMPILE_WALL_MS");
-    expect(runInner).toContain("LEETBATTLE_RUN_WALL_MS");
-    expect(supervisor).not.toContain("LEETBATTLE_RUN_MS");
-    expect(supervisor).toContain(".cpu_stats.cpu_usage.total_usage");
-    expect(supervisor).toContain("budget_ms * 1000000");
-    expect(supervisor).toContain('"$LEETBATTLE_COMPILE_CPU_MS"');
-    expect(supervisor).toContain('"$LEETBATTLE_RUN_CPU_MS"');
-    expect(supervisor).not.toContain("compile.log");
-    expect(compileInner).toMatch(
-      /case "\$child_status" in[\s\S]*125\|126\|127\) exit 1/,
+    expect(supervisor).toContain(
+      'require_bounded_uint "$artifact_size" 1 "$workspace_bytes"',
     );
-    expect(compileInner).toContain('cfile="/workspace/solution.pyc"');
-    expect(runInner).toMatch(
-      /case "\$child_status" in[\s\S]*125\|126\|127\) exit 1/,
-    );
-    expect(runInner).toContain("-I -B /submission/harness.py");
-
-    for (const { limits } of PUBLIC_PROBLEMS) {
-      for (const milliseconds of [limits.compileTimeMs, limits.runTimeMs]) {
-        const roundedSeconds = Math.ceil(milliseconds / 1_000);
-        expect(roundedSeconds * 1_000 - milliseconds).toBeGreaterThanOrEqual(0);
-        expect(roundedSeconds * 1_000 - milliseconds).toBeLessThan(1_000);
-      }
-    }
   });
 
-  it("aligns the HTTP deadline with cold start, judging, and bounded destruction", () => {
-    const readyMs = Number(
-      adapter
-        .match(/INNER_SANDBOX_READY_TIMEOUT_MS = ([\d_]+);/)?.[1]
-        ?.replaceAll("_", ""),
-    );
+  it("keeps the trusted protocol packet last and treats incomplete output as a judge failure", () => {
+    expect(
+      supervisor.indexOf('head -c "$LEETBATTLE_MAX_OUTPUT_BYTES"'),
+    ).toBeLessThan(supervisor.indexOf('emit_status "$status"'));
+    expect(adapter).toContain("const supervisor = parseSupervisorMessage(");
+    expect(adapter).toContain("executionIntegrityVerdict({");
+  });
+
+  it("aligns the HTTP deadline with judging, explicit process kill, and VM destruction", () => {
     const overheadMs = Number(
       adapter
         .match(/SUPERVISOR_OVERHEAD_MS = ([\d_]+);/)?.[1]
+        ?.replaceAll("_", ""),
+    );
+    const killMs = Number(
+      adapter
+        .match(/SANDBOX_PROCESS_KILL_TIMEOUT_MS = ([\d_]+);/)?.[1]
         ?.replaceAll("_", ""),
     );
     const destroyMs = Number(
@@ -205,25 +192,26 @@ describe("Cloudflare production runner contract (no Docker required)", () => {
         ({ limits }) => limits.compileTimeMs + limits.wallTimeMs,
       ),
     );
-    expect(readyMs).toBe(90_000);
     expect(overheadMs).toBe(20_000);
+    expect(killMs).toBe(3_000);
     expect(destroyMs).toBe(15_000);
     expect(RUNNER_HTTP_TIMEOUT_MS).toBeGreaterThan(
-      readyMs + maxJudgeMs + overheadMs + destroyMs,
+      maxJudgeMs + overheadMs + killMs + destroyMs,
     );
-    expect(adapter).toContain("withDeadline(sandbox.destroy()");
   });
 
-  it("keeps the production config and every shell entrypoint statically valid", () => {
+  it("emits safe phase telemetry and keeps all production entrypoints statically valid", () => {
+    for (const phase of [
+      "provision_workspace",
+      "write_inputs",
+      "start_judge",
+      "wait_for_judge",
+      "read_judge_output",
+    ]) {
+      expect(adapter).toContain(phase);
+    }
+    expect(adapter).not.toMatch(/error\.message|error\.stack/);
     expect(wrangler).toContain('"instance_type": "standard-2"');
     execFileSync("bash", ["-n", `${runnerRoot}/container/run-judge.sh`]);
-    for (const script of [
-      "boot-rootless-docker.sh",
-      "verify-inner-isolation.sh",
-      "compile-inner.sh",
-      "run-inner.sh",
-    ]) {
-      execFileSync("sh", ["-n", `${runnerRoot}/container/${script}`]);
-    }
   });
 });

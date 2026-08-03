@@ -1,8 +1,5 @@
 *
 !Dockerfile
 !container/
-!container/boot-rootless-docker.sh
 !container/run-judge.sh
-!container/compile-inner.sh
-!container/run-inner.sh
-!container/verify-inner-isolation.sh
+!container/submission-guard.c

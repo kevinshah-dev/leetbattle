@@ -33,7 +33,13 @@ Set `RUNNER_INTERNAL_SECRET` to a distinct random value of at least 32 bytes. Th
 
 The synchronous response contains only `executionId`, status, verdict, aggregate passed/total counts, aggregate runtime, separate compile time, and a generic message. Sample mode may also return bounded public-sample results and a serialized actual value. Submit mode always omits individual case data and actual values. It never returns source, compiler diagnostics, stack traces, hidden input, expected output, actual hidden output, fixture names, sandbox stderr, image details, or host errors. Infrastructure failures use HTTP 503 and may be retried once by the caller; normal judge failures use HTTP 200.
 
-`GET /health` probes the Docker daemon and both configured execution images through a short-lived cache. It returns only `{"status":"ok"}` with HTTP 200 when ready, or `{"status":"unavailable"}` with HTTP 503; dependency diagnostics are never exposed.
+For the local Node runner, `GET /health` probes the Docker daemon and both
+configured execution images through a short-lived cache. It returns only
+`{"status":"ok"}` with HTTP 200 when ready, or `{"status":"unavailable"}`
+with HTTP 503; dependency diagnostics are never exposed. The Cloudflare
+runner's private `GET /health` is Worker liveness only and does not provision a
+Sandbox. A real Python and Java execution smoke test is the production readiness
+check.
 
 ## Isolation and judging flow
 
@@ -72,17 +78,41 @@ Docker integration tests clearly skip when the daemon or either prebuilt image i
 This Docker adapter is a working local-development/MVP boundary, not hardened hostile multi-tenant isolation. Docker-socket access gives the trusted runner control plane daemon-level authority, and ordinary containers share a host kernel. A production deployment should replace `RunnerAdapter` with a purpose-built sandbox using microVMs or equivalent per-execution isolation, stronger syscall filtering, independent worker hosts, image digest pinning, admission control, and centralized resource telemetry. Do not expose this HTTP service or the Docker socket to the public internet.
 
 The checked-in Cloudflare adapter is that production replacement. The private
-runner Worker creates one fresh Cloudflare Sandbox VM per execution, then uses
-the supported rootless Docker-in-Docker pattern for a second boundary around
-submitted code. The inner compiler and runtime containers have no network or
-Docker socket, run as UID/GID 65532 with a read-only root and no capabilities,
-and fail closed unless cgroup v2, process, memory, CPU, mount, and aggregate
-tmpfs limits are observable from inside the container. Hidden case arguments
-arrive only through standard input; expected values and comparison remain in
-the trusted Worker.
+runner Worker creates one fresh, randomly named Cloudflare Sandbox VM per
+execution and disables its public Internet access. The VM contains pinned
+Python and Java runtimes plus a fixed, root-owned supervisor; it does not start
+a nested container runtime.
 
-The outer VM is still destroyed in bounded cleanup. This extra inner boundary
-is necessary because processes within one Cloudflare Sandbox share its
-filesystem, process space, and localhost, including the Sandbox control plane.
-See the exact image, validation, deployment, smoke-test, and rollback procedure
-in [the Cloudflare deployment runbook](cloudflare-deployment.md).
+The supervisor validates fixed filenames and limits, makes the source and
+harness read-only and the case file root-only, then launches compilation and
+execution in a new process group. Before the untrusted child starts, `setpriv`
+drops it to UID/GID 65532, clears its groups and capability sets, and enables
+`no-new-privileges`; `prlimit` installs hard CPU, process, file-size,
+file-descriptor, and core-dump limits. Python also receives a hard address-space
+limit, while Java uses bounded heap, metaspace, direct-memory, code-cache, and
+stack settings. A small root-owned launcher then verifies the complete dropped
+identity and empty capability sets, closes every descriptor above standard
+error, and loads a seccomp filter before the compiler or runtime starts. The
+filter is inherited across fork and exec, denies all socket operations plus the
+`io_uring` interface, and therefore prevents submitted code from reaching the
+Sandbox's root control process over shared localhost. The launcher exits `126`
+without starting user code if any identity or filter step fails. The fresh
+Sandbox VM remains the outer isolation and aggregate resource boundary.
+
+Hidden case arguments are stored in a root-only file and redirected to the
+harness through standard input. Expected outputs, comparators, canonical
+solutions, application secrets, and database access never enter the Sandbox;
+the trusted Worker parses bounded protocol output and performs comparison.
+The supervisor applies compile and runtime wall deadlines, kills the submitted
+process group during cleanup, and bounds its protocol file. The Worker also
+SIGKILLs an unfinished Sandbox process and invokes `sandbox.destroy()` from an
+unconditional `finally` path. See the exact image, validation, deployment,
+smoke-test, and rollback procedure in
+[the Cloudflare deployment runbook](cloudflare-deployment.md).
+
+`npm run test:runner-image` builds the exact pinned production image and runs an
+opt-in Docker regression suite. The suite first proves the disposable image's
+unguarded localhost control plane has root authority, then verifies that real
+Python and Java submissions launched by the supervisor cannot reach it. Run
+this test for every runner image release in addition to the portable contract
+tests.

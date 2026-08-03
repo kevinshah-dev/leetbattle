@@ -38,6 +38,7 @@
     "typecheck:workers": "tsc --noEmit -p cloudflare/realtime/tsconfig.json && tsc --noEmit -p cloudflare/runner/tsconfig.json",
     "test": "vitest run",
     "test:runner-production": "vitest run tests/runner/cloudflare-production-contract.test.ts tests/runner/cloudflare-execution-integrity.test.ts tests/server/runner-client.test.ts",
+    "test:runner-image": "docker build --platform linux/amd64 --tag leetbattle-cloudflare-runner:security-test cloudflare/runner && RUN_CLOUDFLARE_RUNNER_IMAGE_TESTS=1 CLOUDFLARE_RUNNER_TEST_IMAGE=leetbattle-cloudflare-runner:security-test vitest run tests/runner/cloudflare-sandbox-image.integration.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node --env-file-if-exists=.env --env-file-if-exists=.env.local ./node_modules/@playwright/test/cli.js test",
