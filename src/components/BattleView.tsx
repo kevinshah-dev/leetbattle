@@ -162,6 +162,7 @@ function ProblemPane({ problem }: { problem: PublicProblem }) {
 
 function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
   const results = snapshot.sampleRun?.results || [];
+  const sampleSummary = snapshot.sampleRun?.summary;
   const submission = snapshot.lastSubmission;
   const operation = snapshot.latestExecution;
   const running = operation?.status === "RUNNING";
@@ -179,8 +180,8 @@ function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
               : "judging hidden tests…"
             : operation?.kind === "SUBMIT" && submission
               ? submission.verdict.replaceAll("_", " ")
-              : operation?.kind === "RUN"
-                ? "samples complete"
+              : operation?.kind === "RUN" && sampleSummary
+                ? sampleSummary.verdict.replaceAll("_", " ")
                 : "ready"}
         </small>
       </header>
@@ -230,6 +231,18 @@ function JudgeConsole({ snapshot }: { snapshot: RoomSnapshot }) {
                 </span>
               </div>
             ))}
+          </div>
+        ) : operation?.kind === "RUN" && sampleSummary ? (
+          <div
+            className={`submission-line submission-line--${sampleSummary.verdict.toLowerCase()}`}
+          >
+            <strong>{sampleSummary.verdict.replaceAll("_", " ")}</strong>
+            <p>{sampleSummary.message}</p>
+            <span>
+              {sampleSummary.total > 0
+                ? `${sampleSummary.passed}/${sampleSummary.total} published samples`
+                : "No sample results were produced."}
+            </span>
           </div>
         ) : (
           <p className="console-placeholder">

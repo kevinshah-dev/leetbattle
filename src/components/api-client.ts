@@ -120,6 +120,7 @@ export interface RoomSnapshot {
   sampleRun: {
     status: "IDLE" | "RUNNING" | "COMPLETE";
     results: SampleResult[];
+    summary: SubmissionSummary | null;
   } | null;
   lastSubmission: SubmissionSummary | null;
   result: MatchResult | null;

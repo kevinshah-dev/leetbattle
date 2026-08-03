@@ -16,8 +16,9 @@
     {
       "class_name": "JudgeSandbox",
       "image": "./Dockerfile",
-      // Nested rootless Docker and the pinned Python/Java judge rootfs require
-      // the one-vCPU, six-GiB container class. Per-job cgroups are stricter.
+      // One fresh VM is created per execution. standard-2 hosts the pinned
+      // Python/JDK runtimes and trusted supervisor; the submission child runs
+      // as UID/GID 65532 under stricter hard resource limits.
       "instance_type": "standard-2",
       "max_instances": 10,
     },

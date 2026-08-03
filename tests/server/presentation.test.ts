@@ -254,4 +254,47 @@ describe("room presentation consistency", () => {
     expect(presented.lastSubmission?.verdict).toBe("WRONG_ANSWER");
     expect(presented.sampleRun?.results).toHaveLength(1);
   });
+
+  it("surfaces a failed sample judge instead of presenting an empty completed run", async () => {
+    const active = snapshot("match-1", 6);
+    active.mode = "PRACTICE";
+    active.state = "ACTIVE";
+    const db = vi.fn().mockResolvedValue([
+      {
+        kind: "RUN",
+        status: "COMPLETED",
+        verdict: "INFRA_ERROR",
+        result_summary: {
+          verdict: "INFRA_ERROR",
+          passedCount: 0,
+          totalCount: 0,
+          runtimeMs: 0,
+        },
+      },
+    ]) as unknown as Database;
+    const matches = {
+      eventsSince: vi.fn().mockResolvedValue([]),
+      getSnapshot: vi.fn().mockResolvedValue(active),
+    } as unknown as MatchEngine;
+
+    const presented = await presentRoomSnapshot({
+      actorUserId: "host",
+      inviteToken: "internal-room-token",
+      snapshot: active,
+      db,
+      matches,
+      appOrigin: "http://localhost:3000",
+    });
+
+    expect(presented.sampleRun).toMatchObject({
+      status: "COMPLETE",
+      results: [],
+      summary: {
+        verdict: "INFRASTRUCTURE_ERROR",
+        passed: 0,
+        total: 0,
+      },
+    });
+    expect(presented.sampleRun?.summary?.message).toMatch(/try.*samples/i);
+  });
 });

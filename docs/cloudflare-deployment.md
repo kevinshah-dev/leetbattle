@@ -5,9 +5,9 @@ This runbook deploys the repository's Cloudflare production topology:
 - `leetbattle-web`: the Next.js application compiled as an OpenNext Worker.
 - `leetbattle-realtime`: the public WebSocket edge Worker and its per-room
   `RoomHub` Durable Objects.
-- `leetbattle-runner`: a private Worker that creates one isolated Cloudflare
-  Sandbox VM for each judge request, then runs submitted code in an additional
-  networkless, rootless inner container.
+- `leetbattle-runner`: a private Worker that creates one fresh,
+  internet-disabled Cloudflare Sandbox VM for each judge request. A trusted
+  supervisor in that VM launches the submission as an unprivileged child.
 - `HYPERDRIVE_FRESH`: one cache-disabled Hyperdrive configuration shared by
   the web and realtime Workers and backed by an external PostgreSQL database.
 
@@ -118,10 +118,10 @@ Browser
   │                                           ├─ HYPERDRIVE_FRESH ─> PostgreSQL
   │                                           ├─ RUNNER_SERVICE ───> leetbattle-runner
   │                                           │                         └─ JudgeSandbox
-  │                                           │                            └─ one ephemeral VM
-  │                                           │                               └─ rootless Docker
-  │                                           │                                  └─ restricted
-  │                                           │                                     inner judge
+  │                                           │                            └─ one ephemeral,
+  │                                           │                               internet-disabled VM
+  │                                           │                                  └─ trusted supervisor
+  │                                           │                                     └─ UID/GID 65532 child
   │                                           └─ REALTIME_SERVICE ─> internal notify
   │
   └─ WSS + short-lived one-use ticket ───> leetbattle-realtime
@@ -854,9 +854,9 @@ npx wrangler deploy --dry-run \
 ```
 
 Runner validation requires Docker because Wrangler builds the checked-in
-Sandbox image, including its pinned judge root filesystem and rootless
-Docker-in-Docker layer. Resolve every type, bundle, missing-secret, binding,
-container-build, and isolation-preflight error before continuing.
+Sandbox image with its pinned Python and Java runtimes and trusted supervisor.
+Resolve every type, bundle, missing-secret, binding, container-build, and
+production-runner contract error before continuing.
 
 `--containers-rollout=none` can validate the runner's Worker bundle on a host
 without Docker, but it deliberately skips the container image. It is a useful
@@ -894,50 +894,81 @@ deploys `leetbattle-runner`, and reconciles the `JudgeSandbox` SQLite-backed
 Durable Object class. The Worker remains private because its config has no route
 and disables both `workers.dev` and preview URLs.
 
-The image has pinned or integrity-checked supply-chain inputs. The Ubuntu and
-Alpine package repositories used during the build are not snapshot-locked, so
+The image has pinned or integrity-checked supply-chain inputs. The Ubuntu
+package repositories used while building Python are not snapshot-locked, so
 this is not a claim of bit-for-bit reproducibility:
 
-| Item                   | Checked-in value                                        |
-| ---------------------- | ------------------------------------------------------- |
-| Outer runtime          | rootless Docker `29.6.2` image pinned by SHA-256        |
-| Sandbox control binary | `cloudflare/sandbox:0.12.4-musl` pinned by SHA-256      |
-| Judge root filesystem  | Ubuntu `22.04` base pinned by SHA-256                   |
-| Python                 | `3.13.5` source with a verified archive hash            |
-| Java                   | Eclipse Temurin `21.0.8_9` image pinned by SHA-256      |
-| Sandbox transport      | `rpc`                                                   |
-| Outer instance         | `standard-2`: 1 vCPU, 6 GiB memory, 12 GB disk          |
-| Instance ceiling       | `10`                                                    |
-| Outer public Internet  | disabled by `JudgeSandbox`                              |
-| Submitted-code network | Docker `--network=none`; preflight proves loopback only |
+| Item                     | Checked-in value                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| Sandbox runtime          | glibc `cloudflare/sandbox:0.12.4` image pinned by SHA-256                        |
+| Python                   | `3.13.5` source with a verified archive hash                                     |
+| Java                     | Eclipse Temurin `21.0.8_9` image pinned by SHA-256                               |
+| Sandbox transport        | `rpc`                                                                            |
+| Outer instance           | `standard-2`: 1 vCPU, 6 GiB memory, 12 GB disk                                   |
+| Instance ceiling         | `10`                                                                             |
+| Outer public Internet    | disabled by `JudgeSandbox`                                                       |
+| Submission identity      | UID/GID `65532`, cleared groups/capabilities, `no-new-privileges`                |
+| Submission network       | inherited seccomp denial of sockets and `io_uring`; inherited descriptors closed |
+| Child limits             | hard CPU, PID, file-size, file-descriptor, and core limits; language memory caps |
+| Hidden-input transport   | root-only case file redirected to child standard input                           |
+| Expected-output handling | never enters the VM; comparison remains in the trusted Worker                    |
 
-Cloudflare documents that processes within one Sandbox share its filesystem,
-process space, and localhost. LeetBattle therefore does not execute submitted
-code directly in the outer Sandbox shell. A trusted supervisor starts rootless
-Docker and imports the prebuilt judge root filesystem without pulling at
-runtime. Compilation and execution each run in a separate inner container with
-a non-root UID, read-only root, no capabilities, `no-new-privileges`, no
-network, immutable source/harness mounts, no Docker socket, and hidden case
-arguments delivered through standard input rather than a mount. See
-[Cloudflare's Sandbox security model](https://developers.cloudflare.com/sandbox/concepts/security/)
-and its supported
-[rootless Docker-in-Docker pattern](https://developers.cloudflare.com/sandbox/guides/docker-in-docker/).
+Cloudflare documents that each Sandbox runs in a separate VM with its own
+filesystem, process, network, and resource boundary. The runner derives a new
+random Sandbox identity for every execution and sets `enableInternet = false`.
+Inside that single-use VM, a fixed, root-owned supervisor validates the input
+files and configured limits, makes source and harness read-only, keeps the case
+file root-only, and creates a fresh build/temporary directory for the job. See
+[Cloudflare's Sandbox security model](https://developers.cloudflare.com/sandbox/concepts/security/).
 
-The inner startup probe fails closed unless cgroup v2 enforces the configured
-memory, process, and CPU ceilings; the root filesystem is read-only; only the
-loopback interface exists; the outer Sandbox control port is unreachable; and
-all user-writable tmpfs mounts fit inside the aggregate workspace budget.
-Python and Java use separate compile CPU/wall and runtime CPU/wall budgets.
-Java class files cross the boundary through a fresh, size-limited tmpfs volume
-that is read-only during execution. A fixed, source-free root helper only
-initializes ownership on that new volume.
+Compilation and execution run directly in the Sandbox under a new process
+group. The supervisor uses `setpriv` to drop the untrusted child to UID/GID
+65532, clear supplementary groups and capability sets, and enable
+`no-new-privileges`. It uses `prlimit` for hard CPU, process, file-size,
+file-descriptor, and core-dump limits. Python also receives a hard address-space
+limit; Java uses explicit heap, metaspace, direct-memory, code-cache, and stack
+ceilings. Separate compile and runtime wall deadlines are enforced by the
+trusted supervisor. The outer Sandbox VM remains the aggregate isolation and
+resource boundary.
 
-`standard-2` is deliberate: the outer VM must hold the rootless daemon and the
-pinned Python/Java root filesystem while still enforcing the stricter per-job
-256 MiB cgroup. Do not reduce the instance type without rebuilding and passing
-the complete preflight plus Python and Java smoke tests. The static contract
-tests cannot prove that Cloudflare has delegated the needed cgroup controllers;
-only the full image dry run and deployed smoke test can close that check.
+Cloudflare documents that processes in one Sandbox share localhost, including
+the reserved Sandbox control plane. Immediately before each compiler and
+runtime starts, the root-owned `submission-guard` verifies all real, effective,
+and saved IDs are `65532`, verifies supplementary groups and every capability
+set are empty, closes inherited descriptors above standard error, and loads an
+inherited seccomp filter. The filter denies every socket syscall, the
+`io_uring` interface that could otherwise create sockets, descriptor stealing,
+and cross-process memory access. A child can only add stricter seccomp rules; it
+cannot remove this filter across fork or exec. Any guard setup failure exits
+`126`, which the supervisor maps to a fail-closed infrastructure error before
+submitted code can start.
+
+Hidden arguments are redirected into the harness through standard input.
+Expected values, comparators, canonical solutions, Worker secrets, and database
+access remain outside the VM; bounded protocol output returns to the Worker for
+comparison. The supervisor kills the submitted process group during cleanup.
+If the SDK wait fails or times out, the Worker sends `SIGKILL` to the Sandbox
+process, and it invokes `sandbox.destroy()` from `finally` for every result.
+
+`standard-2` provides headroom for the Sandbox control process, pinned Python
+and Java runtimes, compilation, and the per-job workspace. Do not reduce the
+instance type without rebuilding and passing complete Python and Java resource,
+timeout, cleanup, and smoke tests. Static contract tests cannot prove the
+deployed Container runtime; only the full image dry run and deployed execution
+smoke test close that check.
+
+Build the exact release image and run its executable security regression before
+deploying it:
+
+```bash
+npm run test:runner-image
+```
+
+The test uses a disposable local container, confirms the unguarded SDK control
+plane would execute as root, and then runs adversarial Python and Java through
+the real supervisor. Both submissions must be unable to reach that control
+plane while ordinary compilation, harness output, and supervisor completion
+remain successful.
 
 Container images take longer to provision than Worker code. Wait until the
 deployment is ready:
@@ -951,7 +982,9 @@ npx wrangler deployments list \
 
 Do not add a temporary public runner route to test it. Its `GET /health` and
 bearer-protected `POST /v1/execute` contract are intentionally reachable only
-through a local development session or a configured Service binding.
+through a local development session or a configured Service binding. The health
+endpoint proves Worker liveness only; it does not provision a Sandbox. Require
+one real Python and one real Java execution before declaring the runner ready.
 
 ### 7.2 Deploy realtime
 
@@ -1323,10 +1356,12 @@ realtime config intentionally does not commit one, so provide its Wrangler
 local override in Terminal 2 as shown. Local Hyperdrive simulation connects
 directly to PostgreSQL and does not provide production pooling or query caching.
 Local Sandbox development requires Docker and may take several minutes on its
-first image build. The production runner image also boots rootless Docker and
-imports the judge root filesystem. An `inner isolation check failed` result is
-a fail-closed infrastructure error, not a reason to remove the corresponding
-probe.
+first image build. The production runner image starts the Sandbox control
+process with the pinned Python/JDK runtimes and trusted supervisor already in
+the image. Treat `runner_sandbox_failed` as a fail-closed infrastructure error:
+use its logged phase to diagnose provisioning, input writes, process startup,
+execution, or output collection rather than bypassing supervisor validation or
+cleanup.
 
 Do not use `wrangler dev --remote` for the complete topology:
 
@@ -1386,8 +1421,8 @@ Also watch:
   incidents.
 - Realtime Worker errors, WebSocket upgrade failures, Durable Object alarms,
   disconnect/reconnect lag, and scheduled maintenance outcomes.
-- Runner container startup latency, execution infrastructure verdicts,
-  timeouts, memory pressure, and container cleanup.
+- Runner Sandbox startup latency, execution infrastructure verdicts, timeouts,
+  memory pressure, process-group termination, and VM-destroy cleanup.
 - Web API latency and Clerk authorization failures.
 
 Never log submitted source, hidden fixtures, canonical solutions, database
@@ -1414,7 +1449,7 @@ Use execution, match, room, and request IDs for correlation.
 | Internal notify is rejected                             | Ensure `REALTIME_NOTIFY_SECRET` matches on web and realtime. PostgreSQL remains authoritative, so fix delivery without rewriting match state.                                             |
 | Runner returns `401`/infrastructure error               | Ensure `RUNNER_INTERNAL_SECRET` matches on web and runner and that web uses `RUNNER_SERVICE`, not a public `RUNNER_URL`.                                                                  |
 | Runner deploy cannot build the image                    | Start Docker, rerun `docker info`, confirm the pinned base image is reachable, and run the runner dry-run locally.                                                                        |
-| `inner isolation check failed`                          | Do not bypass the probe. Confirm the image uses `standard-2`, rootless Docker has cgroup v2 delegation, the image digests match, and the full image dry run passed.                       |
+| `runner_sandbox_failed` after process startup           | Use the logged phase, verify the pinned runtimes and supervisor permissions, then run real Python and Java executions. `GET /health` alone does not exercise a Sandbox.                   |
 | First execution fails after runner deploy               | Container provisioning can lag Worker deployment by several minutes. Check `wrangler containers list`, tail runner, and retry only after ready.                                           |
 | Local service binding says `not connected`              | Run separate local Wrangler/OpenNext sessions for all three exact Worker names.                                                                                                           |
 | Durable Object lifecycle/rollback is rejected           | `exports` changes are control-plane lifecycle changes. Do not mix `exports` and legacy `migrations`, and do not attempt a rollback across class creation, rename, transfer, or deletion.  |
@@ -1496,21 +1531,25 @@ have closed.
   no `routes`, and `RUNNER_SERVICE` are deliberate controls.
 - The runner still validates `RUNNER_INTERNAL_SECRET` even across a Service
   binding. This is defense in depth, not a reason to expose it.
-- Each judge request uses a new outer sandbox identity and destroys it in
-  cleanup. Submitted code runs only in an additional rootless inner container
-  with `--network=none`; it never shares the outer Sandbox localhost, process
-  namespace, or Docker socket. The outer
-  [`enableInternet = false` policy](https://developers.cloudflare.com/sandbox/guides/outbound-traffic/)
-  is defense in depth. It is not the only egress boundary because Cloudflare
-  still permits its own DNS path under that setting.
-- Preserve every fail-closed inner probe, the preloaded-image-only policy, and
-  the separate compiler/runtime containers. Removing the inner boundary would
-  expose the Sandbox control plane on the shared outer localhost documented by
-  Cloudflare's
+- Each judge request uses a new Sandbox identity. The adapter disables public
+  Internet access and always invokes `sandbox.destroy()` during `finally`
+  cleanup. Cloudflare still permits its own DNS path under
+  [`enableInternet = false`](https://developers.cloudflare.com/sandbox/guides/outbound-traffic/),
+  so never treat the VM as a place for secrets or expected hidden outputs.
+- Submitted code runs directly in that single-use VM as a child of the trusted
+  supervisor. Preserve the root-owned supervisor and protocol file, root-only
+  hidden-input file, read-only source/harness permissions, fixed environment,
+  UID/GID 65532 privilege drop, cleared capability sets,
+  `no-new-privileges`, closed inherited descriptors, seccomp denial of sockets
+  and `io_uring`, and hard resource limits. Processes within one Sandbox share
+  its filesystem, process space, and localhost as described by Cloudflare's
   [Sandbox isolation model](https://developers.cloudflare.com/sandbox/concepts/security/).
+  Do not remove or bypass `submission-guard`: without that inner network
+  boundary, an untrusted child can reach the root Sandbox control plane.
 - A command timeout alone does not necessarily kill the underlying process.
-  Preserve Docker container cleanup, per-job tmpfs cleanup, the runner's
-  bounded `finally` cleanup, and Sandbox destruction path.
+  Preserve the supervisor's `setsid` process group, TERM/KILL wall deadlines,
+  explicit process-group cleanup, the adapter's fallback SDK-process `SIGKILL`,
+  and unconditional Sandbox-destroy path.
 - Never pass Worker secrets, expected hidden outputs, canonical solutions, or
   application/database files into a judge sandbox. The current adapter writes
   only bounded source, a generated harness, and test arguments; comparison
@@ -1543,12 +1582,12 @@ Budget for five distinct categories:
    hibernatable WebSockets to reduce idle Durable Object duration, but messages,
    alarms, and active handlers are still metered. See
    [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
-3. Runner Containers. Each active judge provisions a `standard-2` outer
+3. Runner Containers. Each active judge provisions one `standard-2` Sandbox
    instance: 6 GiB memory and 12 GB disk, with CPU billed by active use. The
    Worker destroys the fresh Sandbox after every execution, but a burst can
    reach the checked-in `max_instances = 10` ceiling. This is a security and
-   Java-runtime sizing choice with a real cost; measure it before raising
-   concurrency.
+   Python/Java runtime and compilation sizing choice with a real cost; measure
+   it before raising concurrency.
 4. External PostgreSQL. Hyperdrive pooling is included in Workers Paid, but the
    database provider, storage, backups, and network policy remain separate
    costs. See [Hyperdrive pricing](https://developers.cloudflare.com/hyperdrive/platform/pricing/).
@@ -1577,8 +1616,9 @@ startup latency; increase runner capacity only after load tests show a need.
 - [ ] Four strong, distinct internal secrets stored and distributed per matrix.
 - [ ] Full repository checks and all three Wrangler dry runs pass.
 - [ ] Runner deployed and container provisioning ready.
-- [ ] Deployed runner passes its rootless/cgroup/network/read-only startup
-      preflight and one real Python plus one real Java execution.
+- [ ] Deployed runner completes one real Python and one real Java execution,
+      including supervisor privilege drop, limits, bounded output, timeout kill,
+      and fresh-Sandbox destroy cleanup.
 - [ ] Realtime deployed; health succeeds and unauthenticated socket is rejected.
 - [ ] Web built after public env configuration and deployed last.
 - [ ] Production `workers.dev` and preview URLs disabled for all three Workers.

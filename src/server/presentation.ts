@@ -246,9 +246,10 @@ function sampleResults(
   return results;
 }
 
-function submissionSummary(
+function executionSummary(
   row: ExecutionViewRow | undefined,
   mode: MatchSnapshot["mode"],
+  kind: ExecutionViewRow["kind"],
 ): SubmissionSummary | null {
   if (!row || row.status !== "COMPLETED" || !row.result_summary) return null;
   const summary = row.result_summary;
@@ -262,20 +263,38 @@ function submissionSummary(
         : verdict === "OUTPUT_LIMIT"
           ? "OUTPUT_LIMIT"
           : (verdict as SubmissionSummary["verdict"]);
-  const messages: Record<SubmissionSummary["verdict"], string> = {
-    ACCEPTED:
-      mode === "PRACTICE"
-        ? "Every hidden test passed. Practice complete."
-        : "Every hidden test passed. The server is resolving receipt order.",
-    WRONG_ANSWER: "At least one hidden result did not match.",
-    COMPILE_ERROR:
-      "Compilation failed. Review the function contract and syntax.",
-    RUNTIME_ERROR: "The solution stopped with a runtime error.",
-    TIME_LIMIT: "The solution exceeded its execution limit.",
-    MEMORY_LIMIT: "The solution exceeded its memory limit.",
-    OUTPUT_LIMIT: "The solution produced more output than the judge allows.",
-    INFRASTRUCTURE_ERROR: "The judge was unavailable. No cooldown was applied.",
-  };
+  const messages: Record<SubmissionSummary["verdict"], string> =
+    kind === "RUN"
+      ? {
+          ACCEPTED: "All published samples passed.",
+          WRONG_ANSWER: "At least one published sample did not match.",
+          COMPILE_ERROR:
+            "The samples could not run because compilation failed.",
+          RUNTIME_ERROR:
+            "The solution stopped with a runtime error while running samples.",
+          TIME_LIMIT: "The solution exceeded the sample time limit.",
+          MEMORY_LIMIT: "The solution exceeded the sample memory limit.",
+          OUTPUT_LIMIT:
+            "The solution produced more output than the sample judge allows.",
+          INFRASTRUCTURE_ERROR:
+            "The sample judge was unavailable. Try running the samples again.",
+        }
+      : {
+          ACCEPTED:
+            mode === "PRACTICE"
+              ? "Every hidden test passed. Practice complete."
+              : "Every hidden test passed. The server is resolving receipt order.",
+          WRONG_ANSWER: "At least one hidden result did not match.",
+          COMPILE_ERROR:
+            "Compilation failed. Review the function contract and syntax.",
+          RUNTIME_ERROR: "The solution stopped with a runtime error.",
+          TIME_LIMIT: "The solution exceeded its execution limit.",
+          MEMORY_LIMIT: "The solution exceeded its memory limit.",
+          OUTPUT_LIMIT:
+            "The solution produced more output than the judge allows.",
+          INFRASTRUCTURE_ERROR:
+            "The judge was unavailable. No cooldown was applied.",
+        };
   return {
     verdict: mappedVerdict,
     passed: Number(summary.passedCount ?? 0),
@@ -387,9 +406,10 @@ export async function presentRoomSnapshot(input: {
         ? {
             status: latestRun.status === "COMPLETED" ? "COMPLETE" : "RUNNING",
             results: sampleResults(latestRun.result_summary),
+            summary: executionSummary(latestRun, verified.mode, "RUN"),
           }
         : null,
-      lastSubmission: submissionSummary(latestSubmit, verified.mode),
+      lastSubmission: executionSummary(latestSubmit, verified.mode, "SUBMIT"),
       result: matchResult(verified, self),
     };
   }

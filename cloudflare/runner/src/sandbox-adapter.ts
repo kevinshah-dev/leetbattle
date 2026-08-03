@@ -29,8 +29,8 @@ const TRUSTED_COMMAND = "/opt/leetbattle/run-judge";
 const HARNESS_MARKER = "__LEETBATTLE_PROTOCOL__";
 const SUPERVISOR_MARKER = "__LEETBATTLE_SUPERVISOR__";
 const MAX_CASE_INPUT_BYTES = 8 * 1024 * 1024;
-const INNER_SANDBOX_READY_TIMEOUT_MS = 90_000;
 const SUPERVISOR_OVERHEAD_MS = 20_000;
+const SANDBOX_PROCESS_KILL_TIMEOUT_MS = 3_000;
 const SANDBOX_DESTROY_TIMEOUT_MS = 15_000;
 
 const SAFE_MESSAGES: Readonly<Record<RunnerVerdict, string>> = {
@@ -257,6 +257,26 @@ async function withDeadline<T>(
   }
 }
 
+function disposeRpcValue(value: unknown): void {
+  try {
+    const disposeSymbol = (
+      Symbol as typeof Symbol & { readonly dispose?: symbol }
+    ).dispose;
+    if (
+      !disposeSymbol ||
+      value === null ||
+      (typeof value !== "object" && typeof value !== "function")
+    ) {
+      return;
+    }
+    const dispose = (value as Record<symbol, unknown>)[disposeSymbol];
+    if (typeof dispose === "function") Reflect.apply(dispose, value, []);
+  } catch {
+    // Sandbox destruction remains the final cleanup boundary if an RPC value
+    // has already been detached or cannot be explicitly disposed.
+  }
+}
+
 function interpretExecution(
   request: AdapterExecutionRequest,
   execution: ExecResult,
@@ -353,7 +373,8 @@ export class CloudflareSandboxRunnerAdapter implements RunnerAdapter {
         ? generatePythonHarness(
             request.problem.public.functionName,
             limits.maxOutputBytes,
-          ).replace('"/workspace/solution.py"', '"/submission/solution.py"')
+            `${WORKSPACE}/solution.py`,
+          )
         : generateJavaHarness(request.problem.public, limits.maxOutputBytes);
 
     const sandbox = getSandbox(this.namespace, `judge-${crypto.randomUUID()}`, {
@@ -367,21 +388,24 @@ export class CloudflareSandboxRunnerAdapter implements RunnerAdapter {
         language: request.language,
       },
     });
+    let phase = "provision_workspace";
+    let judgeProcess:
+      { readonly id: string; kill(signal?: string): Promise<void> } | undefined;
+    let processNeedsTermination = false;
     try {
       await sandbox.mkdir(WORKSPACE, { recursive: true });
+      phase = "write_inputs";
       await Promise.all([
         sandbox.writeFile(`${WORKSPACE}/${sourceName}`, request.source),
         sandbox.writeFile(`${WORKSPACE}/${harnessName}`, harness),
         sandbox.writeFile(`${WORKSPACE}/cases.ndjson`, cases),
       ]);
 
-      const execution = await sandbox.exec(TRUSTED_COMMAND, {
+      phase = "start_judge";
+      const startedAt = performance.now();
+      const process = await sandbox.startProcess(TRUSTED_COMMAND, {
         cwd: WORKSPACE,
-        timeout:
-          INNER_SANDBOX_READY_TIMEOUT_MS +
-          limits.compileTimeMs +
-          limits.wallTimeMs +
-          SUPERVISOR_OVERHEAD_MS,
+        autoCleanup: false,
         env: {
           LEETBATTLE_LANGUAGE: request.language,
           LEETBATTLE_COMPILE_WALL_MS: String(limits.compileTimeMs),
@@ -394,17 +418,59 @@ export class CloudflareSandboxRunnerAdapter implements RunnerAdapter {
           LEETBATTLE_MAX_WORKSPACE_MB: String(limits.maxWorkspaceMb),
         },
       });
+      judgeProcess = process;
+      processNeedsTermination = true;
+      phase = "wait_for_judge";
+      const completed = await process.waitForExit(
+        limits.compileTimeMs + limits.wallTimeMs + SUPERVISOR_OVERHEAD_MS,
+      );
+      const exitCode = completed.exitCode;
+      disposeRpcValue(completed);
+      processNeedsTermination = false;
+      phase = "read_judge_output";
+      const logs = await process.getLogs();
+      const stdout = logs.stdout;
+      const stderr = logs.stderr;
+      disposeRpcValue(logs);
+      const execution: ExecResult = {
+        success: exitCode === 0,
+        exitCode,
+        stdout,
+        stderr,
+        command: TRUSTED_COMMAND,
+        duration: Math.max(0, Math.round(performance.now() - startedAt)),
+        timestamp: new Date().toISOString(),
+      };
       return interpretExecution(request, execution);
     } catch (error) {
       console.error(
         JSON.stringify({
           event: "runner_sandbox_failed",
           executionId: request.executionId,
+          phase,
           errorType: error instanceof Error ? error.name : "UnknownError",
         }),
       );
       return result(request, "infrastructure_error", 0, 0);
     } finally {
+      if (judgeProcess && processNeedsTermination) {
+        try {
+          await withDeadline(
+            judgeProcess.kill("SIGKILL"),
+            SANDBOX_PROCESS_KILL_TIMEOUT_MS,
+          );
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "runner_sandbox_process_kill_failed",
+              executionId: request.executionId,
+              processId: judgeProcess.id,
+              errorType: error instanceof Error ? error.name : "UnknownError",
+            }),
+          );
+        }
+      }
+      if (judgeProcess) disposeRpcValue(judgeProcess);
       try {
         await withDeadline(sandbox.destroy(), SANDBOX_DESTROY_TIMEOUT_MS);
       } catch (error) {

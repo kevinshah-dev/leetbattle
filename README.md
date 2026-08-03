@@ -167,7 +167,9 @@ Browser
   └── short-lived one-use ticket ──> WebSocket service ──> PostgreSQL event log
 
 Next.js API ── internal bearer secret ──> runner service
-runner service ── fixed Docker commands ──> fresh Python/Java sandbox
+  ├── local ── fixed Docker commands ──> fresh Python/Java container
+  └── production ── Sandbox SDK ──> fresh Cloudflare Sandbox VM
+                                      └── trusted supervisor ──> submission child
 ```
 
 - PostgreSQL is authoritative for profiles, membership, match state, commands, events, executions, results, records, reconnect deadlines, and rematch votes.
@@ -179,7 +181,13 @@ runner service ── fixed Docker commands ──> fresh Python/Java sandbox
 
 ## Judge and security boundary
 
-Each execution gets a new container with a fixed image and command, no network, a non-root user, a read-only root filesystem, a bounded temporary workspace, CPU/wall-clock/memory/PID/file/output limits, and no application files or secrets. The runner accepts only Python or Java and fixed function contracts. Source is never interpolated into a shell command. Containers and descendants are removed on completion or timeout.
+The local Docker adapter gives each execution a new container with a fixed image
+and command, no network, a non-root user, a read-only root filesystem, a bounded
+temporary workspace, CPU/wall-clock/memory/PID/file/output limits, and no
+application files or secrets. The production adapter uses the separate
+Cloudflare VM boundary described below. Both adapters accept only Python or Java
+and fixed function contracts, never interpolate source into a shell command,
+and explicitly terminate submitted processes on completion or timeout.
 
 The local images pin Python 3.13 and Java 21. Java compilation time is recorded separately from solution runtime. `Run samples` uses only published cases; `Submit solution` uses hidden cases and never returns hidden inputs, expected values, per-case identities, stack traces, or captured hidden-case output.
 
@@ -197,13 +205,20 @@ containers.
 The prepared Cloudflare production topology uses an OpenNext web Worker,
 cache-disabled Hyperdrive to external PostgreSQL, a hibernating `RoomHub`
 Durable Object per match, and a private Cloudflare Sandbox runner. Every
-execution gets a fresh internet-disabled `standard-2` Sandbox VM, plus a
-networkless rootless inner container so submitted code cannot reach the
-Sandbox control plane on the outer localhost. The inner boundary fails closed
-unless its non-root identity, read-only root, empty capabilities, cgroup
-limits, tmpfs budget, and isolated network are all verified. This follows the
-same OpenNext/Wrangler conventions as the sibling `call-sheet` and `newsle`
-games while keeping PostgreSQL as the authoritative match database.
+execution gets a fresh `standard-2` Sandbox VM with public Internet access
+disabled. A fixed, root-owned supervisor runs directly in that VM, then launches
+the compiler or runtime in a separate process group after dropping to UID/GID
+65532, clearing capabilities, enabling `no-new-privileges`, installing hard
+resource limits, replacing the environment with a fixed allowlist, closing
+inherited descriptors, and loading an inherited seccomp policy that denies all
+socket and `io_uring` operations. That inner policy prevents submitted code from
+reaching the Sandbox control process over shared localhost; failure to install
+it aborts the judge before user code starts. Hidden case arguments reach the
+harness only through standard input; expected outputs and comparison remain in
+the trusted Worker. Output is bounded, timed-out process groups are killed
+explicitly, and the adapter always destroys the fresh Sandbox in `finally`.
+This follows the same OpenNext/Wrangler conventions as the sibling `call-sheet`
+and `newsle` games while keeping PostgreSQL as the authoritative match database.
 
 The production stack is deployed at `leetbattle.cenough.games` with separate
 web, realtime, and private runner Workers. The web Worker is connected to
