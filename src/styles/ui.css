@@ -232,12 +232,14 @@
   background: var(--coin);
   color: var(--pit);
   font-family: var(--font-display-stack);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  line-height: 1.35;
   text-align: center;
   text-decoration: none;
   text-transform: uppercase;
+  white-space: nowrap;
   box-shadow:
     var(--pixel-shadow),
     inset 0 2px 0 rgba(255, 255, 255, 0.26);
@@ -437,8 +439,7 @@
   min-width: 184px;
   min-height: 54px;
   padding: 0 22px;
-  font-size: 12px;
-  line-height: 1.25;
+  font-size: 14px;
 }
 
 .player-card {
@@ -3205,7 +3206,6 @@
 .lobby-footer .arcade-button {
   min-width: 140px;
   min-height: 40px;
-  font-size: 8px;
 }
 .lobby-footer p {
   color: var(--ink-dim);
@@ -4060,7 +4060,6 @@ kbd {
   grid-column: 2;
   min-width: 140px;
   min-height: 40px;
-  font-size: 8px;
 }
 .result-card__actions {
   display: flex;
@@ -4069,9 +4068,8 @@ kbd {
   margin-top: 20px;
 }
 .result-card__actions .arcade-button {
-  min-width: 145px;
-  min-height: 40px;
-  font-size: 8px;
+  min-width: 168px;
+  min-height: 46px;
 }
 @keyframes result-enter {
   from {
