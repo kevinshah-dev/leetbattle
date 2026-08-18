@@ -245,7 +245,7 @@ order is runner, realtime, then web.
 ## Deployment assumptions
 
 - Run Next.js, the WebSocket service, the runner, and PostgreSQL as separately scalable processes.
-- The WebSocket and web services must reach the same PostgreSQL database. Run at least one due-transition/reconnect sweeper.
+- The WebSocket and web services must reach the same PostgreSQL database. Cloudflare `RoomHub` alarms own active-match deadlines; a six-hour global recovery sweep is the failure backstop and folds in cleanup once daily.
 - Set the final Clerk publishable key and `wss://` realtime URL at image-build time, then rebuild whenever either public value changes.
 - Set `APP_ORIGIN` to the public HTTPS origin, terminate TLS before the app, and use `wss://` for real-time traffic.
 - Keep `CLERK_SECRET_KEY`, database credentials, ticket/invite secrets, and the runner bearer secret in a managed secret store.

@@ -8,6 +8,11 @@ import type {
   PublicProblemRef,
 } from "@/server/domain/types";
 import { MatchEngine } from "@/server/match/match-engine";
+import {
+  runMaintenanceOperations,
+  type MaintenanceOptions,
+  type MaintenanceResult,
+} from "@/server/realtime/maintenance";
 import { RealtimeTicketService } from "@/server/realtime/tickets";
 import { REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS } from "@/server/realtime/timing";
 
@@ -26,15 +31,6 @@ export interface RealtimeRuntime {
   readonly db: Database;
   readonly matches: MatchEngine;
   readonly tickets: RealtimeTicketService;
-}
-
-export interface MaintenanceResult {
-  readonly countdowns: number;
-  readonly staleSessions: number;
-  readonly disconnects: number;
-  readonly staleExecutions: number;
-  readonly expiredTickets: number;
-  readonly expiredSessionRecords: number;
 }
 
 export function assertDistinctRealtimeSecrets(env: Env): void {
@@ -155,23 +151,18 @@ export async function nextMatchWakeAt(
 
 export async function runGlobalMaintenance(
   env: Env,
+  options: MaintenanceOptions,
 ): Promise<MaintenanceResult> {
-  const result = await withRealtimeRuntime(
-    env,
-    async ({ matches, tickets }) => ({
-      countdowns: await matches.processDueCountdowns(),
-      staleSessions: await matches.expireStaleSessions(),
-      disconnects: await matches.processDueDisconnects(),
-      staleExecutions: await matches.recoverStaleExecutions(),
-      expiredTickets: await tickets.purgeExpiredUses(),
-      expiredSessionRecords: await matches.purgeOldRealtimeSessions(),
-    }),
+  const result = await withRealtimeRuntime(env, (runtime) =>
+    runMaintenanceOperations(runtime, options),
   );
 
   console.log(
     JSON.stringify({
       event: "realtime.maintenance.completed",
-      ...result,
+      cleanupRan: result.cleanup !== null,
+      ...result.recovery,
+      ...(result.cleanup ?? {}),
     }),
   );
   return result;

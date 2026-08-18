@@ -8,6 +8,7 @@ import {
   hasReachedRealtimeSocketCap,
   readRealtimeCommandRateState,
 } from "@/server/realtime/limits";
+import { shouldRunDailyCleanup } from "@/server/realtime/maintenance";
 import { REALTIME_SOCKET_LEASE_RENEW_AFTER_SECONDS } from "@/server/realtime/timing";
 import {
   parseClientCommand,
@@ -876,13 +877,17 @@ export default {
   },
 
   scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     ctx: ExecutionContext,
   ): void {
+    const includeCleanup = shouldRunDailyCleanup(controller.scheduledTime);
     ctx.waitUntil(
-      runGlobalMaintenance(env).catch((error) => {
-        logFailure("realtime.maintenance.failed", error);
+      runGlobalMaintenance(env, { includeCleanup }).catch((error) => {
+        logFailure("realtime.maintenance.failed", error, {
+          cron: controller.cron,
+          includeCleanup,
+        });
         throw error;
       }),
     );

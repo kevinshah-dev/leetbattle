@@ -45,7 +45,9 @@
     },
   },
   "triggers": {
-    "crons": ["* * * * *"],
+    // RoomHub alarms own active-room deadlines. This is a global recovery
+    // backstop; the 00:17 UTC run also performs daily retention cleanup.
+    "crons": ["17 */6 * * *"],
   },
   "observability": {
     "enabled": true,

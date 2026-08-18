@@ -999,9 +999,15 @@ npx wrangler deploy \
 ```
 
 This creates `leetbattle-realtime`, reconciles the `RoomHub` SQLite-backed
-Durable Object class, installs its scheduled maintenance trigger, binds the
+Durable Object class, installs its scheduled recovery trigger, binds the
 cache-disabled Hyperdrive configuration, and attaches
 `ws.leetbattle.cenough.games`.
+
+Active-room deadlines are handled by each `RoomHub` Durable Object alarm. The
+global PostgreSQL sweep is only a recovery backstop and runs at 00:17, 06:17,
+12:17, and 18:17 UTC (`17 */6 * * *`). Its 00:17 invocation also deletes
+expired realtime-ticket records and disconnected realtime-session records;
+those retention tasks do not need their own database wake.
 
 Custom Domain DNS and certificate issuance can finish after the Worker upload.
 Poll the liveness endpoint for at most ten minutes rather than treating the
@@ -1027,8 +1033,9 @@ The first request must return a successful Worker liveness response. It is
 deliberately database-free so an unauthenticated caller cannot manufacture
 Hyperdrive traffic. The second must reject the missing ticket; a `101` without
 a valid one-use ticket is a security failure. Database readiness is exercised
-by authenticated socket admission and the scheduled maintenance path, which
-must be verified in the smoke test and logs.
+immediately by authenticated socket admission. Verify scheduled recovery in
+the Worker logs after the next six-hour UTC window rather than treating it as
+an immediate post-deploy smoke check.
 
 ### 7.3 Build and deploy web
 
@@ -1420,7 +1427,8 @@ Also watch:
 - PostgreSQL connection count, locks, slow queries, disk, backups, and provider
   incidents.
 - Realtime Worker errors, WebSocket upgrade failures, Durable Object alarms,
-  disconnect/reconnect lag, and scheduled maintenance outcomes.
+  disconnect/reconnect lag, and six-hour recovery outcomes. The 00:17 UTC
+  outcome must also report that daily cleanup ran.
 - Runner Sandbox startup latency, execution infrastructure verdicts, timeouts,
   memory pressure, process-group termination, and VM-destroy cleanup.
 - Web API latency and Clerk authorization failures.
@@ -1595,6 +1603,19 @@ Budget for five distinct categories:
    validation. Logs and traces consume the account's included event allowance
    and then incur usage charges. Reduce sampling deliberately after measuring
    traffic; do not disable the error signal blindly.
+
+The realtime Worker intentionally relies on per-room alarms for precise match
+work and wakes PostgreSQL globally only every six hours. Assuming each wake
+holds a 0.25-CU Neon compute active for five minutes, the four daily fallback
+wakes consume about 2.5 CU-hours in a 30-day month, before real traffic. The
+old every-minute trigger could keep the endpoint active continuously and use
+about 180 CU-hours. Do not add a frequent health check or second cleanup cron
+that recreates that keep-awake pattern.
+
+The local Node realtime service is different: without Durable Object alarms it
+runs a one-second development sweeper. Do not leave `npm run dev` running
+against Neon when testing is finished if the goal is to let the database scale
+to zero; prefer local PostgreSQL for long development sessions.
 
 Create Cloudflare billing alerts and database-provider budget alerts before
 opening the game publicly. Track concurrent judge executions and container
