@@ -50,8 +50,9 @@ Before releasing AI/ML Arena, resolve these operator-owned prerequisites:
    operator's OpenAI project or password manager; it cannot be copied back out
    of another Worker.
 2. Create and record a PostgreSQL snapshot or portable logical backup before
-   applying migrations `004_ai_ml_arena` and
-   `005_ai_ml_judge_request_budget`.
+   applying migrations `004_ai_ml_arena`,
+   `005_ai_ml_judge_request_budget`, and
+   `006_ai_ml_exemplar_answers`.
 3. Use the current `leetbattle2` database configuration. The older
    `.env.database.production.local` file targets a retired, quota-blocked
    database and must not be used. Parse the owner URL from

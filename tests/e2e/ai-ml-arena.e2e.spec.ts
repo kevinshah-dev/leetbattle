@@ -227,6 +227,11 @@ test.describe("AI/ML Arena real-browser boundary", () => {
         waitForArenaEditor(hostPage),
         waitForArenaEditor(guestPage),
       ]);
+      for (const page of [hostPage, guestPage]) {
+        await expect(
+          page.getByRole("region", { name: "100/100 exemplar answer" }),
+        ).toHaveCount(0);
+      }
 
       const hostQuestion = hostPage
         .getByRole("region", { name: "AI/ML question" })
@@ -283,6 +288,16 @@ test.describe("AI/ML Arena real-browser boundary", () => {
         });
         await expect(answers).toContainText(hostAnswer);
         await expect(answers).toContainText(guestAnswer);
+        const exemplar = dialog.getByRole("region", {
+          name: "100/100 exemplar answer",
+        });
+        await expect(exemplar).toContainText("100/100");
+        await expect(exemplar).toContainText("500 words");
+        expect(
+          (await exemplar.locator(".arena-exemplar-answer__copy").innerText())
+            .trim()
+            .split(/\s+/u),
+        ).toHaveLength(500);
       }
       expect(
         await hostPage.evaluate(() =>
@@ -435,6 +450,9 @@ test.describe("AI/ML Arena real-browser boundary", () => {
       await page.getByRole("button", { name: "Start arena" }).click();
       await expect(page).toHaveURL(/\/battle\/[^/?#]+$/, { timeout: 30_000 });
       await waitForArenaEditor(page);
+      await expect(
+        page.getByRole("region", { name: "100/100 exemplar answer" }),
+      ).toHaveCount(0);
 
       const questionTitle = await page
         .getByRole("region", { name: "AI/ML question" })
@@ -459,6 +477,16 @@ test.describe("AI/ML Arena real-browser boundary", () => {
       await expect(
         dialog.getByRole("region", { name: "Submitted answers" }),
       ).toContainText(practiceAnswer);
+      const exemplar = dialog.getByRole("region", {
+        name: "100/100 exemplar answer",
+      });
+      await expect(exemplar).toContainText("100/100");
+      await expect(exemplar).toContainText("500 words");
+      expect(
+        (await exemplar.locator(".arena-exemplar-answer__copy").innerText())
+          .trim()
+          .split(/\s+/u),
+      ).toHaveLength(500);
       expect(
         await page.evaluate(() =>
           Object.prototype.hasOwnProperty.call(window, "practiceLeak"),

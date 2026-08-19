@@ -13,7 +13,9 @@ import {
   AI_ML_DUEL_JUDGE_INSTRUCTIONS,
   AI_ML_JUDGE_PROMPT,
 } from "../../src/arena/server/judge-prompts.seed";
+import { AI_ML_EXEMPLAR_ANSWERS } from "../../src/arena/server/exemplar-answers.seed";
 import { PRIVATE_AI_ML_QUESTION_BANK } from "../../src/arena/server/private-bank.seed";
+import { measureAiMlAnswer } from "../../src/shared/ai-ml-answer";
 
 const EXPECTED_IDS = [
   "mlai-fde-e01",
@@ -117,6 +119,32 @@ describe("AI/ML public question catalog", () => {
 });
 
 describe("AI/ML private seed bank", () => {
+  it("pairs every versioned question with an exact 500-word exemplar answer", () => {
+    expect(AI_ML_EXEMPLAR_ANSWERS).toHaveLength(20);
+    expect(AI_ML_EXEMPLAR_ANSWERS.map((exemplar) => exemplar.id)).toEqual(
+      EXPECTED_IDS,
+    );
+    expect(
+      new Set(
+        AI_ML_EXEMPLAR_ANSWERS.map(
+          (exemplar) => `${exemplar.id}@${exemplar.version}`,
+        ),
+      ).size,
+    ).toBe(20);
+
+    for (const exemplar of AI_ML_EXEMPLAR_ANSWERS) {
+      const question = getPublicAiMlQuestion(exemplar.id, exemplar.version);
+      expect(question).toBeDefined();
+      const measurement = measureAiMlAnswer(
+        exemplar.answer,
+        question!.answerConstraints,
+      );
+      expect(measurement.wordCount, exemplar.id).toBe(500);
+      expect(measurement.withinLimits, exemplar.id).toBe(true);
+      expect(measurement.normalized, exemplar.id).toBe(exemplar.answer);
+    }
+  });
+
   it("pairs every public question with a complete four-part 100-point rubric", () => {
     expect(PRIVATE_AI_ML_QUESTION_BANK).toHaveLength(20);
     expect(
@@ -194,7 +222,8 @@ Return only the requested strict structured object. The explanation must be plai
       const source = await readFile(file, "utf8");
       if (
         source.includes("arena/server/private-bank.seed") ||
-        source.includes("arena/server/judge-prompts.seed")
+        source.includes("arena/server/judge-prompts.seed") ||
+        source.includes("arena/server/exemplar-answers.seed")
       ) {
         importers.push(relative(root, file).split(sep).join("/"));
       }

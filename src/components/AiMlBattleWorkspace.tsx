@@ -401,6 +401,35 @@ function ArenaResultOverlay({
                 </article>
               ))}
             </section>
+
+            <section
+              aria-label="100/100 exemplar answer"
+              className="arena-exemplar-answer"
+            >
+              <header>
+                <div>
+                  <span>ANSWER KEY</span>
+                  <h2>Rubric-perfect exemplar</h2>
+                </div>
+                <dl aria-label="Exemplar answer facts">
+                  <div>
+                    <dt>Target</dt>
+                    <dd className="tabular">100/100</dd>
+                  </div>
+                  <div>
+                    <dt>Length</dt>
+                    <dd className="tabular">500 words</dd>
+                  </div>
+                </dl>
+              </header>
+              <div className="arena-exemplar-answer__copy">
+                {result.exemplarAnswer
+                  .split(/\n\n+/u)
+                  .map((paragraph, index) => (
+                    <p key={index}>{paragraph}</p>
+                  ))}
+              </div>
+            </section>
           </div>
         ) : (
           <p className="result-card__summary">

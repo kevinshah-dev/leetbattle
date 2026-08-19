@@ -89,6 +89,7 @@ export interface HistoryAiMlAnswer {
 
 export interface AiMlResult {
   answers: AiMlScoredAnswer[];
+  exemplarAnswer: string;
   winnerUsername: string | null;
   explanation: string | null;
   tieBreakReason: string | null;

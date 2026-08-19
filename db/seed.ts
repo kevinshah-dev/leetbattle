@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import postgres from "postgres";
 
 import { PRIVATE_AI_ML_QUESTION_BANK } from "../src/arena/server/private-bank.seed";
+import { AI_ML_EXEMPLAR_ANSWERS } from "../src/arena/server/exemplar-answers.seed";
 import { AI_ML_JUDGE_PROMPT } from "../src/arena/server/judge-prompts.seed";
 import { PUBLIC_PROBLEMS } from "../src/problems/public/catalog";
+import { measureAiMlAnswer } from "../src/shared/ai-ml-answer";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -26,6 +28,12 @@ if (
 
 const aiMlCounts = { EASY: 0, MEDIUM: 0, HARD: 0 };
 const aiMlIds = new Set<string>();
+const exemplarAnswers = new Map(
+  AI_ML_EXEMPLAR_ANSWERS.map((exemplar) => [
+    `${exemplar.id}@${exemplar.version}`,
+    exemplar.answer,
+  ]),
+);
 for (const question of PRIVATE_AI_ML_QUESTION_BANK) {
   aiMlCounts[question.public.difficulty] += 1;
   if (question.public.version !== 1) {
@@ -35,6 +43,24 @@ for (const question of PRIVATE_AI_ML_QUESTION_BANK) {
     throw new Error(`Duplicate AI/ML question ID: ${question.public.id}`);
   }
   aiMlIds.add(question.public.id);
+
+  const exemplarKey = `${question.public.id}@${question.public.version}`;
+  const exemplarAnswer = exemplarAnswers.get(exemplarKey);
+  if (!exemplarAnswer) {
+    throw new Error(`Missing AI/ML exemplar answer: ${exemplarKey}`);
+  }
+  const exemplarMeasurement = measureAiMlAnswer(
+    exemplarAnswer,
+    question.public.answerConstraints,
+  );
+  if (
+    !exemplarMeasurement.withinLimits ||
+    exemplarMeasurement.wordCount !== question.public.answerConstraints.maxWords
+  ) {
+    throw new Error(
+      `AI/ML exemplar ${exemplarKey} must be exactly ${question.public.answerConstraints.maxWords} words and within all answer limits`,
+    );
+  }
 
   const weights = question.criteria.map((criterion) => criterion.weight);
   if (
@@ -55,6 +81,14 @@ if (
 ) {
   throw new Error(
     "The AI/ML catalog must contain exactly 7 Easy, 7 Medium, and 6 Hard questions",
+  );
+}
+if (
+  exemplarAnswers.size !== PRIVATE_AI_ML_QUESTION_BANK.length ||
+  AI_ML_EXEMPLAR_ANSWERS.length !== exemplarAnswers.size
+) {
+  throw new Error(
+    "AI/ML exemplar answers must map one-to-one to the versioned question bank",
   );
 }
 
@@ -141,6 +175,29 @@ try {
             rubric_hash = EXCLUDED.rubric_hash,
             active = true,
             archived_at = NULL,
+            updated_at = clock_timestamp()
+      `;
+
+      const exemplar = exemplarAnswers.get(
+        `${question.public.id}@${question.public.version}`,
+      )!;
+      const measurement = measureAiMlAnswer(
+        exemplar,
+        question.public.answerConstraints,
+      );
+      await tx`
+        INSERT INTO ai_ml_exemplar_answers
+          (question_id, question_version, answer, word_count,
+           character_count, utf8_byte_count)
+        VALUES
+          (${question.public.id}, ${question.public.version},
+           ${measurement.normalized}, ${measurement.wordCount},
+           ${measurement.characterCount}, ${measurement.utf8ByteCount})
+        ON CONFLICT (question_id, question_version) DO UPDATE
+        SET answer = EXCLUDED.answer,
+            word_count = EXCLUDED.word_count,
+            character_count = EXCLUDED.character_count,
+            utf8_byte_count = EXCLUDED.utf8_byte_count,
             updated_at = clock_timestamp()
       `;
     }

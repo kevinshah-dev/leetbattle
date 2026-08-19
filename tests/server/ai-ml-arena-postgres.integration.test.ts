@@ -5,6 +5,10 @@ import {
   getPublicAiMlQuestion,
   listPublicAiMlQuestionsByDifficulty,
 } from "../../src/arena/public/catalog";
+import {
+  AI_ML_EXEMPLAR_ANSWERS,
+  getAiMlExemplarAnswer,
+} from "../../src/arena/server/exemplar-answers.seed";
 import { AI_ML_JUDGE_PROMPT } from "../../src/arena/server/judge-prompts.seed";
 import { PRIVATE_AI_ML_QUESTION_BANK } from "../../src/arena/server/private-bank.seed";
 import {
@@ -28,6 +32,7 @@ import { HistoryService } from "../../src/server/history/history-service";
 import { MatchEngine } from "../../src/server/match/match-engine";
 import { presentRoomSnapshot } from "../../src/server/presentation";
 import { ProfileService } from "../../src/server/profiles/profile-service";
+import { measureAiMlAnswer } from "../../src/shared/ai-ml-answer";
 import {
   createPostgresHarness,
   type PostgresHarness,
@@ -114,6 +119,31 @@ async function seedAiMlJudgeData(harness: PostgresHarness): Promise<void> {
           rubric_hash = EXCLUDED.rubric_hash,
           active = true,
           archived_at = NULL,
+          updated_at = clock_timestamp()
+    `;
+
+    const exemplar = getAiMlExemplarAnswer(
+      question.public.id,
+      question.public.version,
+    );
+    if (!exemplar) throw new Error("Missing test AI/ML exemplar answer");
+    const measurement = measureAiMlAnswer(
+      exemplar.answer,
+      question.public.answerConstraints,
+    );
+    await harness.sql`
+      INSERT INTO ai_ml_exemplar_answers
+        (question_id, question_version, answer, word_count,
+         character_count, utf8_byte_count)
+      VALUES
+        (${question.public.id}, ${question.public.version},
+         ${measurement.normalized}, ${measurement.wordCount},
+         ${measurement.characterCount}, ${measurement.utf8ByteCount})
+      ON CONFLICT (question_id, question_version) DO UPDATE
+      SET answer = EXCLUDED.answer,
+          word_count = EXCLUDED.word_count,
+          character_count = EXCLUDED.character_count,
+          utf8_byte_count = EXCLUDED.utf8_byte_count,
           updated_at = clock_timestamp()
     `;
   }
@@ -466,6 +496,11 @@ integration("PostgreSQL AI/ML Arena and history", () => {
     });
     expect(JSON.stringify(opponentView)).not.toContain(answer);
     expect(JSON.stringify(opponentView)).not.toContain("referenceAnswerNotes");
+    expect(JSON.stringify(hostView)).not.toContain("exemplarAnswer");
+    expect(JSON.stringify(opponentView)).not.toContain("exemplarAnswer");
+    expect(JSON.stringify(hostView)).not.toContain(
+      AI_ML_EXEMPLAR_ANSWERS[0]!.answer,
+    );
     const [hostSnapshot, opponentSnapshot] = await Promise.all([
       engine.getSnapshotByMatch("host", matchId),
       engine.getSnapshotByMatch("opponent", matchId),
@@ -542,6 +577,19 @@ integration("PostgreSQL AI/ML Arena and history", () => {
       { clerk_user_id: "outsider", wins: 0, losses: 0 },
     ]);
 
+    const finalizedSnapshot = await engine.getSnapshotByMatch("host", matchId);
+    const finalizedView = await presentRoomSnapshot({
+      actorUserId: "host",
+      inviteToken: "authorized-duel-token",
+      snapshot: finalizedSnapshot,
+      db: harness.sql,
+      matches: engine,
+      appOrigin: "https://leetbattle.example.test",
+    });
+    expect(finalizedView.aiMl?.result?.exemplarAnswer).toBe(
+      getAiMlExemplarAnswer("mlai-fde-e01", 1)?.answer,
+    );
+
     const duplicate = await arena.submitAnswer({
       actorUserId: "host",
       matchId,
@@ -567,6 +615,14 @@ integration("PostgreSQL AI/ML Arena and history", () => {
           '"tampered"'::jsonb
         )
         WHERE id = ${evaluations[0]!.id}
+      `,
+    ).rejects.toThrow(/immutable/i);
+
+    await expect(
+      harness.sql`
+        UPDATE ai_ml_exemplar_answers
+        SET answer = answer || ' changed'
+        WHERE question_id = 'mlai-fde-e01' AND question_version = 1
       `,
     ).rejects.toThrow(/immutable/i);
 
@@ -786,6 +842,18 @@ integration("PostgreSQL AI/ML Arena and history", () => {
       records_applied: false,
       answer_b_user_id: null,
     });
+    const finalizedSnapshot = await engine.getSnapshotByMatch("host", matchId);
+    const finalizedView = await presentRoomSnapshot({
+      actorUserId: "host",
+      inviteToken: "internal-practice-token",
+      snapshot: finalizedSnapshot,
+      db: harness.sql,
+      matches: engine,
+      appOrigin: "https://leetbattle.example.test",
+    });
+    expect(finalizedView.aiMl?.result?.exemplarAnswer).toBe(
+      getAiMlExemplarAnswer("mlai-fde-m01", 1)?.answer,
+    );
     await expect(history.detail("host", matchId)).resolves.toMatchObject({
       challengeType: "AI_ML",
       mode: "PRACTICE",

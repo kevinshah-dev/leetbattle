@@ -15,12 +15,18 @@ version, title, prompt, difficulty, category, tags, and answer constraints.
 Reference notes, required concepts, optional nuances, misconceptions, and
 question-specific rubric criteria are seed-only material.
 
-`db/seed.ts` is the production path allowed to import the private question bank
-and judge-instruction modules. It persists versioned rows in
-`ai_ml_question_registry` and `ai_ml_judge_prompts`. Application and Worker
-runtimes load private material from PostgreSQL; they must never import either
-seed module. Client and OpenNext bundle scans fail on seed module identifiers,
-concrete private content, prompt content, rubric/reference markers, or secrets.
+Each question version also has a seed-only, rubric-aligned exemplar containing
+exactly 500 words. Exemplars are stored separately from private judging
+material so adding them does not change an existing rubric hash. Once a
+question version has been used by a match, its exemplar is immutable.
+
+`db/seed.ts` is the production path allowed to import the private question bank,
+exemplar-answer, and judge-instruction modules. It persists versioned rows in
+`ai_ml_question_registry`, `ai_ml_exemplar_answers`, and
+`ai_ml_judge_prompts`. Application and Worker runtimes load stored material from
+PostgreSQL; they must never import these seed modules. Client and OpenNext bundle
+scans fail on seed module identifiers, concrete private or exemplar content,
+prompt content, rubric/reference markers, or secrets.
 
 Treat a question version as immutable after use:
 
@@ -178,6 +184,13 @@ judge instructions, provider raw output, and the API key. Safe telemetry is
 limited to opaque evaluation/attempt IDs, versions and hashes, requested and
 returned model, provider response ID, attempt classification, latency, token
 counts, blank/no-contest/tie-break counters, and aggregate score distributions.
+
+After a completed or automatically scored evaluation, the authorized room
+snapshot includes that question version's exemplar inside the result object.
+Both practice and duel result dialogs render it as escaped plain text. Active,
+countdown, judging, cancelled, forfeited, and failed-judge snapshots never
+receive exemplar text, and seed modules must remain absent from runtime and
+client bundles.
 
 ## Release checks
 

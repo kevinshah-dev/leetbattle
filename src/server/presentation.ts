@@ -43,6 +43,7 @@ interface AiMlEvaluationViewRow {
   completion_classification: string | null;
   retry_not_before: string | null;
   failure_retryable: boolean;
+  exemplar_answer: string | null;
 }
 
 export function canRetryAiMlEvaluation(input: {
@@ -447,14 +448,23 @@ export async function presentRoomSnapshot(input: {
           : Promise.resolve([]),
         snapshot.challengeType === "AI_ML"
           ? db<AiMlEvaluationViewRow[]>`
-            SELECT status, answer_a_user_id, answer_b_user_id,
-                   official_score_a, official_score_b, winner_user_id,
-                   tie_break_reason, explanation, completion_classification,
-                   retry_not_before::text,
-                   COALESCE(failure_metadata->>'retryable' = 'true', false)
-                     AS failure_retryable
-            FROM ai_ml_evaluations
-            WHERE match_id = ${snapshot.matchId}
+            SELECT evaluation.status, evaluation.answer_a_user_id,
+                   evaluation.answer_b_user_id, evaluation.official_score_a,
+                   evaluation.official_score_b, evaluation.winner_user_id,
+                   evaluation.tie_break_reason, evaluation.explanation,
+                   evaluation.completion_classification,
+                   evaluation.retry_not_before::text,
+                   COALESCE(
+                     evaluation.failure_metadata->>'retryable' = 'true',
+                     false
+                   )
+                     AS failure_retryable,
+                   exemplar.answer AS exemplar_answer
+            FROM ai_ml_evaluations evaluation
+            LEFT JOIN ai_ml_exemplar_answers exemplar
+              ON exemplar.question_id = evaluation.question_id
+             AND exemplar.question_version = evaluation.question_version
+            WHERE evaluation.match_id = ${snapshot.matchId}
           `
           : Promise.resolve([]),
       ],
@@ -487,6 +497,9 @@ export async function presentRoomSnapshot(input: {
     const evaluation = aiMlEvaluation[0];
     const finalizedAiMl =
       evaluation?.status === "COMPLETED" || evaluation?.status === "SKIPPED";
+    if (finalizedAiMl && !evaluation.exemplar_answer) {
+      throw new Error("Finalized AI/ML result is missing its exemplar answer");
+    }
     const scoreFor = (userId: string): number => {
       if (evaluation?.answer_a_user_id === userId)
         return evaluation.official_score_a ?? 0;
@@ -502,6 +515,7 @@ export async function presentRoomSnapshot(input: {
               answer: answer.normalized_answer,
               score: scoreFor(answer.clerk_user_id),
             })),
+            exemplarAnswer: evaluation.exemplar_answer!,
             winnerUsername:
               aiMlAnswers.find(
                 (answer) => answer.clerk_user_id === evaluation.winner_user_id,

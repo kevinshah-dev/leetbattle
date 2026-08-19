@@ -3779,7 +3779,7 @@ kbd {
 }
 
 /* AI/ML results and authorized history details */
-.arena-result-card {
+.result-card.arena-result-card {
   display: flex;
   flex-direction: column;
   width: min(1040px, calc(100vw - 72px));
@@ -3795,7 +3795,7 @@ kbd {
   flex: 0 0 auto;
 }
 
-.arena-result-card__header h1 {
+.arena-result-card .arena-result-card__header h1 {
   margin: 9px 0 0;
   font-size: 44px;
 }
@@ -3983,6 +3983,84 @@ kbd {
   line-height: 1.62;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.arena-exemplar-answer {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  margin-top: 14px;
+  background: var(--pit);
+  box-shadow:
+    inset 0 0 0 1px var(--line),
+    inset 4px 0 var(--circuit);
+}
+
+.arena-exemplar-answer > header {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 19px 18px 18px 20px;
+  border-right: 1px solid var(--line);
+  background:
+    linear-gradient(rgba(53, 211, 199, 0.035), rgba(53, 211, 199, 0.035)),
+    var(--pit);
+}
+
+.arena-exemplar-answer > header span,
+.arena-exemplar-answer dt {
+  color: var(--ink-dim);
+  font-family: var(--font-utility-stack);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.arena-exemplar-answer h2 {
+  margin: 9px 0 0;
+  color: var(--circuit);
+  font-family: var(--font-display-stack);
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.arena-exemplar-answer dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.arena-exemplar-answer dl div {
+  display: grid;
+  gap: 4px;
+}
+
+.arena-exemplar-answer dd {
+  margin: 0;
+  color: var(--screen);
+  font-family: var(--font-utility-stack);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.arena-exemplar-answer__copy {
+  max-height: 360px;
+  padding: 18px 20px 20px;
+  overflow: auto;
+  color: #c8d2cf;
+  font-size: 12px;
+  line-height: 1.7;
+  scrollbar-color: #324150 var(--pit);
+  scrollbar-width: thin;
+}
+
+.arena-exemplar-answer__copy p {
+  margin: 0;
+}
+
+.arena-exemplar-answer__copy p + p {
+  margin-top: 13px;
 }
 
 .arena-result-card__actions {

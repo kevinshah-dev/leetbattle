@@ -50,6 +50,23 @@ export const FORBIDDEN_CLOUDFLARE_RUNTIME_SENTINELS = [
     value: "judge-prompts.seed",
   },
   {
+    label: "AI/ML exemplar answer seed module",
+    value: "arena/server/exemplar-answers.seed",
+  },
+  {
+    label: "AI/ML exemplar answer seed module filename",
+    value: "exemplar-answers.seed",
+  },
+  {
+    label: "AI/ML exemplar answer seed export",
+    value: "AI_ML_EXEMPLAR_ANSWERS",
+  },
+  {
+    label: "AI/ML concrete exemplar answer",
+    value:
+      "A training set, validation set, and test set serve different stages of model development.",
+  },
+  {
     label: "AI/ML private question bank export",
     value: "PRIVATE_AI_ML_QUESTION_BANK",
   },
