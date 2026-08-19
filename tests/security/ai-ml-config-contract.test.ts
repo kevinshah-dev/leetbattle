@@ -44,6 +44,18 @@ async function codeFilesUnder(directory: string): Promise<string[]> {
 }
 
 describe("AI/ML judge configuration", () => {
+  it("keeps PostgreSQL array type discovery enabled in both Hyperdrive runtimes", async () => {
+    const [webDatabase, realtimeDatabase] = await Promise.all([
+      projectFile("src/server/db/client.ts"),
+      projectFile("cloudflare/realtime/src/runtime.ts"),
+    ]);
+
+    for (const runtime of [webDatabase, realtimeDatabase]) {
+      expect(runtime).toContain("fetch_types: true");
+      expect(runtime).not.toContain("fetch_types: false");
+    }
+  });
+
   it("documents the same server-only defaults in every judging example", async () => {
     const examples = await Promise.all(
       [

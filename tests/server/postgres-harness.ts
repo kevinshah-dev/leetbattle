@@ -7,6 +7,7 @@ import type { Database } from "../../src/server/db/client";
 
 export interface PostgresHarness {
   sql: Database;
+  scopedDatabaseUrl: string;
   reset(): Promise<void>;
   close(): Promise<void>;
 }
@@ -44,6 +45,7 @@ export async function createPostgresHarness(
 
   return {
     sql,
+    scopedDatabaseUrl: scopedUrl.toString(),
     async reset() {
       await sql.unsafe(
         "TRUNCATE TABLE ai_ml_judge_request_reservations, profiles, problem_registry RESTART IDENTITY CASCADE; ALTER SEQUENCE execution_server_sequence RESTART WITH 1",

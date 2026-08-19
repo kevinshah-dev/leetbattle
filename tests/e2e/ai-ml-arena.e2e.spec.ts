@@ -242,8 +242,12 @@ test.describe("AI/ML Arena real-browser boundary", () => {
         "Host explains the core mechanism, assumptions, tradeoffs, and validation strategy. <script>window.e2eLeak=true</script>";
       const guestAnswer =
         "Guest gives a concise definition and one relevant implementation detail.";
-      await hostPage.getByLabel("AI/ML answer").fill(hostAnswer);
-      await guestPage.getByLabel("AI/ML answer").fill(guestAnswer);
+      await hostPage
+        .getByRole("textbox", { name: "AI/ML answer" })
+        .fill(hostAnswer);
+      await guestPage
+        .getByRole("textbox", { name: "AI/ML answer" })
+        .fill(guestAnswer);
       await hostPage
         .getByRole("button", { name: "Submit final answer" })
         .click();
@@ -438,7 +442,9 @@ test.describe("AI/ML Arena real-browser boundary", () => {
         .innerText();
       const practiceAnswer =
         "Practice answer covers the mechanism, assumptions, tradeoffs, and evaluation plan. <img src=x onerror=window.practiceLeak=true>";
-      await page.getByLabel("AI/ML answer").fill(practiceAnswer);
+      await page
+        .getByRole("textbox", { name: "AI/ML answer" })
+        .fill(practiceAnswer);
       await page.getByRole("button", { name: "Submit final answer" }).click();
       const dialog = page.getByRole("dialog");
       await expect(

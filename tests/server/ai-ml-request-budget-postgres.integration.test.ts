@@ -6,6 +6,7 @@ import {
   AiMlJudgeRequestBudgetExceededError,
   PostgresAiMlJudgeRequestBudget,
 } from "@/server/ai-ml";
+import { closeDatabaseClient, createDatabase } from "@/server/db/client";
 import {
   createPostgresHarness,
   type PostgresHarness,
@@ -100,6 +101,28 @@ integration("PostgreSQL AI/ML judge request budget", () => {
         charged_user_ids: ["host"],
       },
     ]);
+  });
+
+  it("round-trips participant arrays with the production Hyperdrive client settings", async () => {
+    const hyperdriveSql = createDatabase(harness.scopedDatabaseUrl, {
+      hyperdrive: true,
+      maximumConnections: 1,
+    });
+    try {
+      const budget = new PostgresAiMlJudgeRequestBudget(hyperdriveSql, 10);
+      const input = reservationInput(1, ["host", "guest"]);
+      const first = await budget.reserve(input);
+
+      await expect(budget.reserve(input)).resolves.toEqual(first);
+      const [stored] = await hyperdriveSql<{ charged_user_ids: string[] }[]>`
+        SELECT charged_user_ids
+        FROM ai_ml_judge_request_reservations
+        WHERE id = ${first.id}
+      `;
+      expect(stored?.charged_user_ids).toEqual(["guest", "host"]);
+    } finally {
+      await closeDatabaseClient(hyperdriveSql);
+    }
   });
 
   it("atomically prevents one participant from consuming the shared budget", async () => {

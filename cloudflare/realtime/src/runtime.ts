@@ -92,7 +92,9 @@ function openDatabase(env: Env): Database {
     idle_timeout: 10,
     connect_timeout: 10,
     prepare: true,
-    fetch_types: false,
+    // AI judge budget reservations use PostgreSQL text arrays. Disabling type
+    // discovery makes Postgres.js serialize a one-item array as a scalar.
+    fetch_types: true,
   });
 }
 

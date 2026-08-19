@@ -25,7 +25,10 @@ export function createDatabase(
     idle_timeout: 20,
     connect_timeout: 10,
     prepare: options.hyperdrive ?? false,
-    ...(options.hyperdrive ? { fetch_types: false } : {}),
+    // The production schema contains PostgreSQL arrays (for example the
+    // durable AI judge budget's charged_user_ids). Postgres.js needs type
+    // discovery enabled to serialize and parse those values correctly.
+    ...(options.hyperdrive ? { fetch_types: true } : {}),
   });
 }
 
