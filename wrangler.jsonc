@@ -38,6 +38,12 @@
   ],
   "vars": {
     "APP_ORIGIN": "https://leetbattle.cenough.games",
+    // AI/ML judging configuration is non-secret. The API key is declared below
+    // as a Wrangler secret and must never be copied into vars or browser env.
+    "OPENAI_JUDGE_MODEL": "gpt-5.4-nano",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS": "1000",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER": "50",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH": "6",
   },
   "secrets": {
     "required": [
@@ -47,6 +53,7 @@
       "RUNNER_INTERNAL_SECRET",
       "ROOM_INVITE_SECRET",
       "REALTIME_NOTIFY_SECRET",
+      "OPENAI_API_KEY",
     ],
   },
   "observability": {

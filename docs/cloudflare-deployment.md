@@ -8,6 +8,8 @@ This runbook deploys the repository's Cloudflare production topology:
 - `leetbattle-runner`: a private Worker that creates one fresh,
   internet-disabled Cloudflare Sandbox VM for each judge request. A trusted
   supervisor in that VM launches the submission as an unprivileged child.
+- OpenAI Responses API judging for written AI/ML rounds, called only by the web
+  Worker and realtime deadline/recovery Worker. It is not part of the runner.
 - `HYPERDRIVE_FRESH`: one cache-disabled Hyperdrive configuration shared by
   the web and realtime Workers and backed by an external PostgreSQL database.
 
@@ -22,6 +24,7 @@ are:
 | Realtime | `wss://ws.leetbattle.cenough.games/socket` | Public            |
 | Runner   | `RUNNER_SERVICE` → `leetbattle-runner`     | Private binding   |
 | Database | `HYPERDRIVE_FRESH` → external PostgreSQL   | Worker binding    |
+| AI judge | OpenAI Responses API                       | Server outbound   |
 
 The checked-in Wrangler files are the source of truth for Worker names,
 bindings, routes, compatibility settings, observability, Durable Object class
@@ -32,83 +35,58 @@ The web build follows Cloudflare's
 [Next.js/OpenNext deployment model](https://developers.cloudflare.com/workers/framework-guides/web-apps/nextjs/)
 and the repository-pinned OpenNext adapter rather than Pages.
 
-## Current deployment blockers
+## Current production preflight
 
-As of **July 23, 2026**, deployment from the currently authenticated Cloudflare
-account is blocked. This was confirmed directly from this project:
+As of **August 19, 2026**, Workers Paid, Containers, Docker, the three Workers,
+their routes and service bindings, and the cache-disabled `HYPERDRIVE_FRESH`
+configuration are present. The existing web, realtime, runner, and coding
+surfaces pass their unauthenticated HTTP boundary checks.
 
-```text
-$ npx wrangler containers list
-Unauthorized: You do not have access to Cloudflare Containers.
-Deploying containers requires the Workers Paid plan.
-```
+Before releasing AI/ML Arena, resolve these operator-owned prerequisites:
 
-The Sandbox SDK is [available on Workers Paid](https://developers.cloudflare.com/sandbox/),
-and Containers usage is included only with the
-[Workers Paid plan](https://developers.cloudflare.com/containers/pricing/).
-Upgrade the account before attempting the runner deployment. Do not deploy only
-the web and realtime Workers as a supposed production release: code execution
-would be unavailable, so the documented game flow would not work end to end.
+1. Install `OPENAI_API_KEY` as a secret on `leetbattle-web` and
+   `leetbattle-realtime`. It is intentionally absent from the runner. Wrangler
+   secrets are write-only and Worker-scoped, so obtain the key from the
+   operator's OpenAI project or password manager; it cannot be copied back out
+   of another Worker.
+2. Create and record a PostgreSQL snapshot or portable logical backup before
+   applying migrations `004_ai_ml_arena` and
+   `005_ai_ml_judge_request_budget`.
+3. Use the current `leetbattle2` database configuration. The older
+   `.env.database.production.local` file targets a retired, quota-blocked
+   database and must not be used. Parse the owner URL from
+   `.env.database.leetbattle2.local` and change only its pathname to
+   `/leetbattle` for migration and seed commands.
 
-The account owner must perform the billing change: open Cloudflare's
-[Workers plan page](https://dash.cloudflare.com/?to=/:account/workers/plans),
-select the same account reported by `wrangler whoami`, and enable Workers Paid.
-The current published base price is USD $5/month before usage overages; review
-the live checkout total and configure billing alerts rather than treating this
-guide as authorization to purchase it.
-
-The inspection host also does not currently have a `docker` command. That is a
-separate local verification blocker: even after the account upgrade, install
-Docker and start its daemon before attempting the full runner dry run or
-deployment. The `--containers-rollout=none` diagnostic later in this guide
-checks only the Worker bundle and cannot validate or publish the judge image.
-
-This host is Apple Silicon macOS and already has Homebrew. After reviewing
-Docker Desktop's current license, the operator can install and start it with:
-
-```bash
-brew install --cask docker-desktop
-open -a Docker
-
-# Complete Docker Desktop's first-run prompts, then wait for both to succeed.
-docker version
-docker info
-```
-
-Installing or accepting a desktop application's license is intentionally left
-to the user; it was not performed automatically during this preparation.
-
-The `psql` client is also absent on this host. Install only the client library
-and expose it for the current release shell:
+The local `psql` and `pg_dump` clients are optional but useful for independent
+verification and a logical backup. Install the client-only package when needed:
 
 ```bash
 brew install libpq
 export PATH="$(brew --prefix libpq)/bin:$PATH"
 psql --version
+pg_dump --version
 ```
 
-Persist that PATH in your shell profile only if you want `psql` available in
-future terminals. The application itself uses Postgres.js and does not require
-the `psql` binary at runtime.
+Alternatively, use a pinned PostgreSQL client container without placing the
+database password in shell history or command arguments. The application itself
+uses Postgres.js and does not require these binaries at runtime.
 
-After upgrading, this command must succeed rather than return the authorization
-error:
+Reconfirm the control-plane and local prerequisites before every release:
 
 ```bash
 cd /Users/kevinshah/Desktop/cegames/leetbattle
+npx wrangler whoami
 npx wrangler containers list
+npx wrangler hyperdrive list
+docker info
+npx wrangler secret list -c wrangler.jsonc
+npx wrangler secret list -c cloudflare/realtime/wrangler.jsonc
+npx wrangler secret list -c cloudflare/runner/wrangler.jsonc
 ```
 
-An empty list is acceptable before the first runner deployment.
-
-At inspection time, `wrangler whoami` was authenticated, but
-`wrangler hyperdrive list` showed no configuration for this game and the
-project had no `.env` or `.env.local` containing a production database URL or
-deployment secrets. The local machine also had no Docker CLI, so the runner's
-Worker-only dry run passed with `--containers-rollout=none`, while its full
-image dry run correctly stopped before building. Those operator-owned inputs
-and Docker must be supplied in addition to upgrading the plan; no Cloudflare
-resources were created or partially deployed during this preparation.
+The web and realtime inventories must include `OPENAI_API_KEY`; the runner
+inventory must not. Secret values must never be printed during this check.
 
 ## Architecture and deployment invariants
 
@@ -116,6 +94,7 @@ resources were created or partially deployed during this preparation.
 Browser
   ├─ HTTPS + Clerk session ───────────────> leetbattle-web (OpenNext Worker)
   │                                           ├─ HYPERDRIVE_FRESH ─> PostgreSQL
+  │                                           ├─ OpenAI Responses API (AI/ML only)
   │                                           ├─ RUNNER_SERVICE ───> leetbattle-runner
   │                                           │                         └─ JudgeSandbox
   │                                           │                            └─ one ephemeral,
@@ -126,7 +105,8 @@ Browser
   │
   └─ WSS + short-lived one-use ticket ───> leetbattle-realtime
                                               ├─ RoomHub Durable Object
-                                              └─ HYPERDRIVE_FRESH ─> PostgreSQL
+                                              ├─ HYPERDRIVE_FRESH ─> PostgreSQL
+                                              └─ OpenAI Responses API (deadline/recovery)
 ```
 
 Keep these invariants intact:
@@ -159,6 +139,10 @@ Keep these invariants intact:
 9. `src/server/match/match-engine.ts` is bundled into both the web and realtime
    Workers. Deploy realtime before web whenever this shared match code changes,
    even if no file under `cloudflare/realtime/` changed.
+10. `OPENAI_API_KEY` is a secret on web and realtime only. The runner, browser,
+    database, logs, and build-time public environment must never receive it.
+    Both judging Workers use the same checked-in model and rolling-24-hour
+    global, per-user, and per-match outbound-attempt circuit limits.
 
 ## Repository deployment map
 
@@ -171,6 +155,7 @@ Keep these invariants intact:
 | Hyperdrive helper   | `scripts/configure-cloudflare.mjs`     |
 | SQL migrations      | `db/migrate.ts`, `db/migrations/*.sql` |
 | Problem seed        | `db/seed.ts`                           |
+| AI/ML operations    | `docs/ai-ml-arena.md`                  |
 | Build web           | `npm run build:cloudflare`             |
 | Deploy runner       | `npm run deploy:runner`                |
 | Deploy realtime     | `npm run deploy:realtime`              |
@@ -743,7 +728,7 @@ that file without the shell sourcing it. Rebuild and redeploy the web Worker
 whenever either changes. The publishable key must exactly match the value later
 uploaded as the web Worker's `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` binding.
 
-## 5. Generate distinct internal secrets
+## 5. Generate distinct internal secrets and provide the OpenAI secret
 
 Generate four independent 48-byte values in a trusted interactive terminal and
 store them in a password manager. Hex avoids dotenv quoting ambiguities:
@@ -764,6 +749,11 @@ Assign them to:
 
 Do not reuse a value. The application rejects missing values, published example
 sentinels, values shorter than 32 bytes, and reused trust-boundary secrets.
+
+Obtain `OPENAI_API_KEY` from the operator's OpenAI project and store it in the
+same password manager. It is a separate provider credential, not one of the
+four generated internal trust secrets. Do not print it in shell history, use it
+as a build variable, or put it in a runner secret file.
 
 Create three ignored, operator-only dotenv files. These files are passed to
 Wrangler's `--secrets-file` option on the first deployment so
@@ -792,6 +782,7 @@ REALTIME_TICKET_SECRET=replace_with_generated_ticket_secret
 RUNNER_INTERNAL_SECRET=replace_with_generated_runner_secret
 ROOM_INVITE_SECRET=replace_with_generated_invite_secret
 REALTIME_NOTIFY_SECRET=replace_with_generated_notify_secret
+OPENAI_API_KEY=replace_with_openai_project_key
 ```
 
 `cloudflare/realtime/.dev.vars.production`:
@@ -800,6 +791,7 @@ REALTIME_NOTIFY_SECRET=replace_with_generated_notify_secret
 REALTIME_TICKET_SECRET=replace_with_the_same_ticket_secret
 ROOM_INVITE_SECRET=replace_with_the_same_invite_secret
 REALTIME_NOTIFY_SECRET=replace_with_the_same_notify_secret
+OPENAI_API_KEY=replace_with_the_same_openai_project_key
 ```
 
 `cloudflare/runner/.dev.vars.production`:
@@ -818,12 +810,22 @@ The shared values must match byte-for-byte:
 | Room invite secret     | ✓   | ✓        |        |
 | Realtime notify secret | ✓   | ✓        |        |
 | Runner internal secret | ✓   |          | ✓      |
+| OpenAI API key         | ✓   | ✓        |        |
 
-Do not add `DATABASE_URL`, hidden tests, canonical solutions, or submitted
-source to any Worker secret file. Do not set a public `RUNNER_URL` in
-production; `RUNNER_SERVICE` is the production transport. Keep the password
-manager as the source of truth. These three files are transient first-deploy
-inputs and are removed after production validation.
+`OPENAI_JUDGE_MODEL="gpt-5.4-nano"` and
+`OPENAI_JUDGE_MAX_DAILY_REQUESTS="1000"`,
+`OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER="50"`, and
+`OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH="6"` are non-secret Wrangler
+variables in both judging Worker configs. They atomically limit actual outbound
+attempt reservations over a rolling 24-hour window. Change values in both
+checked-in Wrangler files and deploy realtime before web; do not create an
+untracked dashboard override.
+
+Do not add `DATABASE_URL`, hidden tests, canonical solutions, submitted source,
+AI/ML answers, or private rubric/prompt material to any Worker secret file. Do
+not set a public `RUNNER_URL` in production; `RUNNER_SERVICE` is the production
+transport. Keep the password manager as the source of truth. These three files
+are transient first-deploy inputs and are removed after production validation.
 
 ## 6. Validate before changing Cloudflare
 
@@ -900,7 +902,7 @@ this is not a claim of bit-for-bit reproducibility:
 
 | Item                     | Checked-in value                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------- |
-| Sandbox runtime          | glibc `cloudflare/sandbox:0.12.4` image pinned by SHA-256                        |
+| Sandbox runtime          | glibc `cloudflare/sandbox:0.12.7` image pinned by SHA-256                        |
 | Python                   | `3.13.5` source with a verified archive hash                                     |
 | Java                     | Eclipse Temurin `21.0.8_9` image pinned by SHA-256                               |
 | Sandbox transport        | `rpc`                                                                            |
@@ -1064,7 +1066,7 @@ creates the `leetbattle.cenough.games` Custom Domain.
 The pinned OpenNext CLI may print an early warning that required secrets are
 missing because that precheck looks only at its own process environment. Do not
 export secrets merely to silence it. The subsequent Wrangler binding inventory
-must list all six web secrets as `(hidden)`; that proves `--secrets-file` was
+must list all seven web secrets as `(hidden)`; that proves `--secrets-file` was
 forwarded. Stop if any secret is absent from that inventory or if Wrangler
 returns an error.
 
@@ -1127,8 +1129,10 @@ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_replace_me
 NEXT_PUBLIC_REALTIME_URL=wss://ws.leetbattle.cenough.games
 ```
 
-Never add a secret, database URL, or private Clerk key to `.env.production`.
-Process-level build variables take precedence over the tracked public default.
+Never add a secret, database URL, private Clerk key, or `OPENAI_API_KEY` to
+`.env.production` or Workers Builds variables. OpenAI is a runtime Wrangler
+secret, not a Next.js build input. Process-level public build variables take
+precedence over the tracked public default.
 
 Use:
 
@@ -1138,9 +1142,14 @@ Deploy command: npx opennextjs-cloudflare deploy
 ```
 
 The bundle check fails the build if the production realtime URL is absent, an
-unresolved `NEXT_PUBLIC_REALTIME_URL` reference remains, or a local WebSocket
-URL appears in emitted client JavaScript. Treat that failure as a build
-configuration error; do not bypass it.
+unresolved `NEXT_PUBLIC_REALTIME_URL` reference remains, a local WebSocket URL
+appears in emitted client JavaScript, or client static contains a secret name,
+secret-like value, private rubric/reference marker, or complete judge material.
+The OpenNext runtime scan separately rejects seed modules, concrete private
+material, and exact configured secret values while allowing server code to
+reference secret binding names, published validation sentinels, and persisted
+private-field names. Treat any failure as a build/privacy error; do not bypass
+it.
 
 Choose one production authority:
 
@@ -1432,36 +1441,45 @@ Also watch:
 - Runner Sandbox startup latency, execution infrastructure verdicts, timeouts,
   memory pressure, process-group termination, and VM-destroy cleanup.
 - Web API latency and Clerk authorization failures.
+- AI/ML evaluation and attempt counts, completion/failure classification,
+  requested/returned model, prompt/schema/question/rubric versions, provider
+  response ID, latency, token usage, blank/no-contest/tie-break counters, and
+  the rolling-24-hour circuit state.
 
 Never log submitted source, hidden fixtures, canonical solutions, database
-credentials, bearer secrets, realtime tickets, or full Clerk session tokens.
-Use execution, match, room, and request IDs for correlation.
+credentials, bearer secrets, `OPENAI_API_KEY`, realtime tickets, full Clerk
+session tokens, raw AI/ML answers, private reference/rubric material, complete
+judge instructions, or raw provider output. Use opaque execution, evaluation,
+attempt, match, room, and request IDs for correlation.
 
 ### Failure table
 
-| Symptom                                                 | Likely cause and action                                                                                                                                                                   |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Unauthorized: ... Containers ... Workers Paid`         | The confirmed account blocker remains. Upgrade the target account, confirm `wrangler whoami`, then rerun `wrangler containers list`.                                                      |
-| `docker: command not found` or daemon unavailable       | Install Docker on the release host, start its daemon, rerun `docker info`, and complete the full runner dry run. The rollout-none diagnostic is insufficient.                             |
-| `REPLACE_WITH_HYPERDRIVE_ID` or configure check failure | Create the real cache-disabled Hyperdrive resource, run `npm run cf:configure -- <ID>`, then rerun `--check`.                                                                             |
-| Web deploy says a bound service does not exist          | Deploy `leetbattle-runner`, then `leetbattle-realtime`, before `leetbattle-web`. Check the exact Worker names in each Wrangler file.                                                      |
-| Hyperdrive create/get reports connection refused        | Verify database hostname/port, provider allowlist, database capacity, TLS mode, and credentials. Test the same URL directly with `psql`.                                                  |
-| TLS or certificate failure to PostgreSQL                | Use the provider's supported CA with `verify-full`; upload a private CA to Hyperdrive when required. Do not disable verification to force a production connection.                        |
-| Fresh reads appear stale                                | Verify `wrangler hyperdrive get` reports caching disabled and that both web and realtime bind the intended `HYPERDRIVE_FRESH` ID.                                                         |
-| `relation ... does not exist`                           | Migrations or seed ran against a different database. Compare the direct URL's host/database with the Hyperdrive origin, then run direct `db:migrate` and `db:seed`.                       |
-| Landing works but Clerk loops or rejects sessions       | Check production-vs-development key pairing, the web hostname in Clerk, OAuth production credentials, Clerk DNS, and that the public key was present during the latest OpenNext build.    |
-| Next warns that `middleware` is deprecated              | Expected with the pinned adapter: OpenNext does not yet support Next 16's Node.js Proxy runtime. Keep `src/middleware.ts` until that support lands; auth still runs at the Edge boundary. |
-| Browser tries the wrong WebSocket host                  | `NEXT_PUBLIC_REALTIME_URL` was wrong or absent at build time. Set it to `wss://ws.leetbattle.cenough.games`, rebuild OpenNext, and redeploy web.                                          |
-| Realtime health fails                                   | Tail realtime and verify the Worker deployment, Custom Domain, certificate, route, and required secrets. The endpoint intentionally does not query PostgreSQL.                            |
-| Realtime health works but upgrade fails                 | Inspect Hyperdrive/PostgreSQL, then check `APP_ORIGIN`, `wss://`, clock skew, the one-use ticket path, and identical `REALTIME_TICKET_SECRET` values on web and realtime.                 |
-| Internal notify is rejected                             | Ensure `REALTIME_NOTIFY_SECRET` matches on web and realtime. PostgreSQL remains authoritative, so fix delivery without rewriting match state.                                             |
-| Runner returns `401`/infrastructure error               | Ensure `RUNNER_INTERNAL_SECRET` matches on web and runner and that web uses `RUNNER_SERVICE`, not a public `RUNNER_URL`.                                                                  |
-| Runner deploy cannot build the image                    | Start Docker, rerun `docker info`, confirm the pinned base image is reachable, and run the runner dry-run locally.                                                                        |
-| `runner_sandbox_failed` after process startup           | Use the logged phase, verify the pinned runtimes and supervisor permissions, then run real Python and Java executions. `GET /health` alone does not exercise a Sandbox.                   |
-| First execution fails after runner deploy               | Container provisioning can lag Worker deployment by several minutes. Check `wrangler containers list`, tail runner, and retry only after ready.                                           |
-| Local service binding says `not connected`              | Run separate local Wrangler/OpenNext sessions for all three exact Worker names.                                                                                                           |
-| Durable Object lifecycle/rollback is rejected           | `exports` changes are control-plane lifecycle changes. Do not mix `exports` and legacy `migrations`, and do not attempt a rollback across class creation, rename, transfer, or deletion.  |
-| Custom Domain creation fails                            | Remove or reconcile a conflicting DNS/CNAME/Worker route and verify `cenough.games` is in the selected account. Keep Wrangler routes as source of truth.                                  |
+| Symptom                                                 | Likely cause and action                                                                                                                                                                    |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Unauthorized: ... Containers ... Workers Paid`         | The confirmed account blocker remains. Upgrade the target account, confirm `wrangler whoami`, then rerun `wrangler containers list`.                                                       |
+| `docker: command not found` or daemon unavailable       | Install Docker on the release host, start its daemon, rerun `docker info`, and complete the full runner dry run. The rollout-none diagnostic is insufficient.                              |
+| `REPLACE_WITH_HYPERDRIVE_ID` or configure check failure | Create the real cache-disabled Hyperdrive resource, run `npm run cf:configure -- <ID>`, then rerun `--check`.                                                                              |
+| Web deploy says a bound service does not exist          | Deploy `leetbattle-runner`, then `leetbattle-realtime`, before `leetbattle-web`. Check the exact Worker names in each Wrangler file.                                                       |
+| Hyperdrive create/get reports connection refused        | Verify database hostname/port, provider allowlist, database capacity, TLS mode, and credentials. Test the same URL directly with `psql`.                                                   |
+| TLS or certificate failure to PostgreSQL                | Use the provider's supported CA with `verify-full`; upload a private CA to Hyperdrive when required. Do not disable verification to force a production connection.                         |
+| Fresh reads appear stale                                | Verify `wrangler hyperdrive get` reports caching disabled and that both web and realtime bind the intended `HYPERDRIVE_FRESH` ID.                                                          |
+| `relation ... does not exist`                           | Migrations or seed ran against a different database. Compare the direct URL's host/database with the Hyperdrive origin, then run direct `db:migrate` and `db:seed`.                        |
+| Landing works but Clerk loops or rejects sessions       | Check production-vs-development key pairing, the web hostname in Clerk, OAuth production credentials, Clerk DNS, and that the public key was present during the latest OpenNext build.     |
+| Next warns that `middleware` is deprecated              | Expected with the pinned adapter: OpenNext does not yet support Next 16's Node.js Proxy runtime. Keep `src/middleware.ts` until that support lands; auth still runs at the Edge boundary.  |
+| Browser tries the wrong WebSocket host                  | `NEXT_PUBLIC_REALTIME_URL` was wrong or absent at build time. Set it to `wss://ws.leetbattle.cenough.games`, rebuild OpenNext, and redeploy web.                                           |
+| Realtime health fails                                   | Tail realtime and verify the Worker deployment, Custom Domain, certificate, route, and required secrets. The endpoint intentionally does not query PostgreSQL.                             |
+| Realtime health works but upgrade fails                 | Inspect Hyperdrive/PostgreSQL, then check `APP_ORIGIN`, `wss://`, clock skew, the one-use ticket path, and identical `REALTIME_TICKET_SECRET` values on web and realtime.                  |
+| Internal notify is rejected                             | Ensure `REALTIME_NOTIFY_SECRET` matches on web and realtime. PostgreSQL remains authoritative, so fix delivery without rewriting match state.                                              |
+| AI/ML judging reports missing configuration             | Ensure `OPENAI_API_KEY` is installed as a secret on web and realtime, and that both configs declare the same `OPENAI_JUDGE_MODEL`. Never add the key to runner or browser build variables. |
+| AI/ML judging is temporarily unavailable                | Inspect safe failure classification and attempt metadata. For retryable failures, let idempotent recovery reuse the immutable snapshot; do not issue an independent second judgment.       |
+| AI/ML budget circuit is open                            | Inspect the rolling 24-hour global, participant, and match attempt counts and provider spend. Wait for capacity or deliberately change identical limits in both Wrangler configs.          |
+| Runner returns `401`/infrastructure error               | Ensure `RUNNER_INTERNAL_SECRET` matches on web and runner and that web uses `RUNNER_SERVICE`, not a public `RUNNER_URL`.                                                                   |
+| Runner deploy cannot build the image                    | Start Docker, rerun `docker info`, confirm the pinned base image is reachable, and run the runner dry-run locally.                                                                         |
+| `runner_sandbox_failed` after process startup           | Use the logged phase, verify the pinned runtimes and supervisor permissions, then run real Python and Java executions. `GET /health` alone does not exercise a Sandbox.                    |
+| First execution fails after runner deploy               | Container provisioning can lag Worker deployment by several minutes. Check `wrangler containers list`, tail runner, and retry only after ready.                                            |
+| Local service binding says `not connected`              | Run separate local Wrangler/OpenNext sessions for all three exact Worker names.                                                                                                            |
+| Durable Object lifecycle/rollback is rejected           | `exports` changes are control-plane lifecycle changes. Do not mix `exports` and legacy `migrations`, and do not attempt a rollback across class creation, rename, transfer, or deletion.   |
+| Custom Domain creation fails                            | Remove or reconcile a conflicting DNS/CNAME/Worker route and verify `cenough.games` is in the selected account. Keep Wrangler routes as source of truth.                                   |
 
 ## 11. Rollback and recovery
 
@@ -1574,6 +1592,16 @@ have closed.
 - Rotating the Clerk publishable key requires a fresh OpenNext build. Rotating
   only `CLERK_SECRET_KEY` requires updating the web secret, but validate the key
   pair and sessions afterward.
+- Rotate `OPENAI_API_KEY` on web and realtime together. It is a runtime secret,
+  so rotation does not require rebuilding browser assets. Validate with a
+  controlled AI/ML evaluation and never copy the key to the runner or a build
+  variable.
+- AI/ML question and judge-prompt seed modules must remain outside every runtime
+  import graph. Keep the client and OpenNext bundle scans enabled; they protect
+  against concrete prompt/rubric/reference leakage and secret material.
+- Retained AI/ML raw answers and detailed judgments are participant-only data.
+  An invite does not grant history access, and general logs or realtime events
+  are not alternative data stores.
 - Restrict Clerk's allowed production subdomains and origins. A WebSocket ticket
   does not broaden Clerk authorization.
 - Keep `workers_dev: false` and `preview_urls: false` on every production
@@ -1582,7 +1610,7 @@ have closed.
 
 ## 13. Cost and capacity
 
-Budget for five distinct categories:
+Budget for six distinct categories:
 
 1. The Workers Paid account minimum. The current plan gate is unavoidable for
    Sandbox/Containers.
@@ -1603,6 +1631,11 @@ Budget for five distinct categories:
    validation. Logs and traces consume the account's included event allowance
    and then incur usage charges. Reduce sampling deliberately after measuring
    traffic; do not disable the error signal blindly.
+6. OpenAI judging. Each nonblank evaluation uses `gpt-5.4-nano` with a compact
+   rubric, 500-word answer cap, low reasoning effort, no tools, fixed output
+   cap, and no close-score second pass. The rolling-24-hour outbound-attempt
+   defaults are 1,000 globally, 50 per participant, and 6 per match; also
+   configure provider-side budget alerts.
 
 The realtime Worker intentionally relies on per-room alarms for precise match
 work and wakes PostgreSQL globally only every six hours. Assuming each wake
@@ -1635,6 +1668,11 @@ startup latency; increase runner capacity only after load tests show a need.
 - [ ] Existing production Clerk instance configured for the web hostname.
 - [ ] Final public Clerk key and realtime URL present before OpenNext build.
 - [ ] Four strong, distinct internal secrets stored and distributed per matrix.
+- [ ] `OPENAI_API_KEY` installed on web and realtime only; runner inventory has
+      no OpenAI binding.
+- [ ] Web and realtime both use `OPENAI_JUDGE_MODEL=gpt-5.4-nano` and
+      global/per-user/per-match limits of `1000`/`50`/`6` (or the same reviewed
+      overrides).
 - [ ] Full repository checks and all three Wrangler dry runs pass.
 - [ ] Runner deployed and container provisioning ready.
 - [ ] Deployed runner completes one real Python and one real Java execution,
@@ -1646,7 +1684,13 @@ startup latency; increase runner capacity only after load tests show a need.
 - [ ] Secret names, versions, routes, Hyperdrive, and Containers inventoried.
 - [ ] Two-account Python/Java duel, cooldown, winner, reconnect, rematch, and
       history smoke tests pass.
-- [ ] Logs contain no source, hidden cases, credentials, or tokens.
+- [ ] AI/ML duel, practice, blank/no-contest, recoverable judge failure, and
+      participant-only history smoke tests pass without exposing an answer
+      before finalization.
+- [ ] Client and OpenNext bundle privacy scans pass against the exact deployed
+      artifact.
+- [ ] Logs contain no source, AI/ML answer, private rubric/prompt, hidden case,
+      credential, or token.
 - [ ] Transient database and first-deploy secret files removed after validation.
 - [ ] Last-known-good Worker versions, referenced Hyperdrive IDs/container
       images, and PostgreSQL recovery point recorded.

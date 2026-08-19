@@ -11,12 +11,24 @@ import {
 } from "@/server/http";
 import { presentRoomSnapshot } from "@/server/presentation";
 import { withServices } from "@/server/services";
+import { measureAiMlAnswer } from "@/shared/ai-ml-answer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const idempotencyKey = z.string().min(1).max(200);
 const language = z.enum(["PYTHON", "JAVA"]);
+const aiMlAnswer = z
+  .string()
+  .max(24_000)
+  .superRefine((answer, context) => {
+    const measurement = measureAiMlAnswer(answer);
+    if (measurement.withinLimits) return;
+    context.addIssue({
+      code: "custom",
+      message: "AI/ML answer exceeds the 500-word or size limit",
+    });
+  });
 const commandContext = {
   matchId: z.string().uuid(),
   expectedVersion: z.number().int().nonnegative(),
@@ -28,6 +40,22 @@ const commandInput = z.discriminatedUnion("type", [
       type: z.literal("SELECT_LANGUAGE"),
       idempotencyKey,
       payload: z.object({ language }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...commandContext,
+      type: z.literal("SUBMIT_AI_ML_ANSWER"),
+      idempotencyKey,
+      payload: z.object({ answer: aiMlAnswer }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...commandContext,
+      type: z.literal("RETRY_AI_ML_JUDGING"),
+      idempotencyKey,
+      payload: z.object({}).strict(),
     })
     .strict(),
   z
@@ -88,7 +116,7 @@ export async function POST(
     requireMutationOrigin(request);
     const actorUserId = await requireAuthenticatedUserId();
     const { roomCode } = await context.params;
-    const input = commandInput.parse(await readJson(request));
+    const input = commandInput.parse(await readJson(request, 32 * 1024));
     return withServices(async (services) => {
       const roomId = await services.matches.getRoomIdForInvite(
         actorUserId,
@@ -103,6 +131,16 @@ export async function POST(
           "MATCH_NOT_FOUND",
           "This command belongs to an earlier round. Refresh the room and try again.",
           409,
+        );
+      }
+      if (
+        authoritative.challengeType === "AI_ML" &&
+        authoritative.state === "ACTIVE" &&
+        (await services.arena.processAnswerDeadlineForMatch(input.matchId))
+      ) {
+        authoritative = await services.matches.getSnapshotByMatch(
+          actorUserId,
+          input.matchId,
         );
       }
       if (input.expectedVersion > authoritative.version) {
@@ -133,6 +171,13 @@ export async function POST(
           break;
         case "RUN_SAMPLES":
         case "SUBMIT": {
+          if (authoritative.challengeType !== "CODING") {
+            throw new DomainError(
+              "INVALID_CHALLENGE_TYPE",
+              "AI/ML Arena accepts prose answers instead of code",
+              409,
+            );
+          }
           // The selected server-side language remains authoritative.
           const self = authoritative.players.find((player) => player.isSelf);
           if (!self || self.language !== input.payload.language) {
@@ -155,6 +200,36 @@ export async function POST(
           );
           break;
         }
+        case "SUBMIT_AI_ML_ANSWER":
+          if (authoritative.challengeType !== "AI_ML") {
+            throw new DomainError(
+              "INVALID_CHALLENGE_TYPE",
+              "Coding battles accept code submissions, not prose answers",
+              409,
+            );
+          }
+          await services.arena.submitAnswer({
+            actorUserId,
+            matchId,
+            idempotencyKey: input.idempotencyKey,
+            answer: input.payload.answer,
+          });
+          authoritative = await services.matches.getSnapshotByMatch(
+            actorUserId,
+            matchId,
+          );
+          break;
+        case "RETRY_AI_ML_JUDGING":
+          await services.arena.retryEvaluation({
+            actorUserId,
+            matchId,
+            idempotencyKey: input.idempotencyKey,
+          });
+          authoritative = await services.matches.getSnapshotByMatch(
+            actorUserId,
+            matchId,
+          );
+          break;
         case "REMATCH_VOTE":
           authoritative = await services.matches.requestRematch({
             actorUserId,
@@ -190,6 +265,7 @@ export async function POST(
         matchId: snapshot.matchId,
         version: snapshot.version,
         startsAt: snapshot.startsAt,
+        wakeAt: snapshot.aiMl?.retryAt ?? snapshot.answerDeadlineAt,
       });
       return json({
         accepted: true as const,

@@ -11,7 +11,7 @@ export function DesktopGate() {
       <h1>Bring a bigger screen to the fight.</h1>
       <p>
         LeetBattle needs a desktop viewport of at least 1180 × 720 so the
-        problem, editor, and live battle state stay readable.
+        challenge, editor, and live battle state stay readable.
       </p>
       <p className="desktop-gate__hint">
         Your invite URL is safe. Open this same link on a laptop or desktop.

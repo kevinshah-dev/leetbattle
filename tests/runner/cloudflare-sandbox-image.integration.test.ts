@@ -11,8 +11,7 @@ import { generatePythonHarness } from "../../services/runner/harness/python";
 import { getServerProblem } from "../../src/problems/server/bank.server";
 
 const execFileAsync = promisify(execFile);
-const runImageTests =
-  process.env.RUN_CLOUDFLARE_RUNNER_IMAGE_TESTS === "1";
+const runImageTests = process.env.RUN_CLOUDFLARE_RUNNER_IMAGE_TESTS === "1";
 const image =
   process.env.CLOUDFLARE_RUNNER_TEST_IMAGE ??
   "leetbattle-cloudflare-runner:security-test";

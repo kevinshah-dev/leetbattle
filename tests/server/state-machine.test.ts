@@ -12,6 +12,8 @@ describe("authoritative state machine", () => {
   it("permits only the documented forward transitions", () => {
     expect(canTransition("LOBBY", "COUNTDOWN")).toBe(true);
     expect(canTransition("COUNTDOWN", "ACTIVE")).toBe(true);
+    expect(canTransition("ACTIVE", "JUDGING")).toBe(true);
+    expect(canTransition("JUDGING", "FINISHED")).toBe(true);
     expect(canTransition("ACTIVE", "FINISHED")).toBe(true);
     expect(canTransition("FINISHED", "REMATCH_PENDING")).toBe(true);
     expect(canTransition("ACTIVE", "LOBBY")).toBe(false);
@@ -42,10 +44,13 @@ describe("authoritative state machine", () => {
     );
   });
 
-  it("changes records only for accepted wins and forfeits", () => {
+  it("changes records only for resolved duel wins", () => {
     expect(shouldApplyRecord("ACCEPTED")).toBe(true);
     expect(shouldApplyRecord("FORFEIT")).toBe(true);
+    expect(shouldApplyRecord("JUDGED")).toBe(true);
+    expect(shouldApplyRecord("ANSWER_TIMEOUT")).toBe(true);
     expect(shouldApplyRecord("NO_CONTEST")).toBe(false);
+    expect(shouldApplyRecord("JUDGE_FAILED")).toBe(false);
     expect(shouldApplyRecord("CANCELLED")).toBe(false);
   });
 });

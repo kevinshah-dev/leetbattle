@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  GLOBAL_AI_ML_DEADLINE_SWEEP_LIMIT,
+  GLOBAL_AI_ML_RECOVERY_CONCURRENCY,
+  GLOBAL_AI_ML_RECOVERY_LIMIT,
   GLOBAL_RECOVERY_CRON,
   runMaintenanceOperations,
   shouldRunDailyCleanup,
@@ -21,8 +24,15 @@ function maintenanceServices() {
       recoverStaleExecutions: vi.fn(async () => 4),
       purgeOldRealtimeSessions: vi.fn(async () => 6),
     },
+    arena: {
+      processDueAnswerDeadlines: vi.fn(async () => 7),
+      recoverEvaluations: vi.fn(async () => 8),
+    },
     tickets: {
       purgeExpiredUses: vi.fn(async () => 5),
+    },
+    judgeRequestBudget: {
+      purgeExpiredReservations: vi.fn(async () => 9),
     },
   } satisfies MaintenanceServices;
 }
@@ -59,11 +69,24 @@ describe("Cloudflare realtime maintenance schedule", () => {
         staleSessions: 2,
         disconnects: 3,
         staleExecutions: 4,
+        answerDeadlines: 7,
+        aiMlEvaluations: 8,
       },
       cleanup: null,
     });
     expect(services.tickets.purgeExpiredUses).not.toHaveBeenCalled();
     expect(services.matches.purgeOldRealtimeSessions).not.toHaveBeenCalled();
+    expect(
+      services.judgeRequestBudget.purgeExpiredReservations,
+    ).not.toHaveBeenCalled();
+    expect(services.arena.processDueAnswerDeadlines).toHaveBeenCalledWith(
+      GLOBAL_AI_ML_DEADLINE_SWEEP_LIMIT,
+      { evaluateImmediately: false },
+    );
+    expect(services.arena.recoverEvaluations).toHaveBeenCalledWith(
+      GLOBAL_AI_ML_RECOVERY_LIMIT,
+      GLOBAL_AI_ML_RECOVERY_CONCURRENCY,
+    );
   });
 
   it("folds both cleanup operations into the daily recovery wake", async () => {
@@ -77,13 +100,19 @@ describe("Cloudflare realtime maintenance schedule", () => {
         staleSessions: 2,
         disconnects: 3,
         staleExecutions: 4,
+        answerDeadlines: 7,
+        aiMlEvaluations: 8,
       },
       cleanup: {
         expiredTickets: 5,
         expiredSessionRecords: 6,
+        expiredJudgeRequestReservations: 9,
       },
     });
     expect(services.tickets.purgeExpiredUses).toHaveBeenCalledOnce();
     expect(services.matches.purgeOldRealtimeSessions).toHaveBeenCalledOnce();
+    expect(
+      services.judgeRequestBudget.purgeExpiredReservations,
+    ).toHaveBeenCalledOnce();
   });
 });

@@ -147,9 +147,9 @@ export function HomeExperience() {
             <span>Strike first.</span>
           </h1>
           <p className="landing__lede">
-            Invite one friend for a head-to-head coding duel, or enter Practice
-            Mode solo. Either way, the goal is the same: clear every hidden
-            test.
+            Invite one friend for a head-to-head coding battle or AI/ML Arena,
+            or enter solo practice. Race to clear the hidden tests—or make the
+            strongest technical case.
           </p>
           <div className="landing__actions">
             {isLoaded && isSignedIn ? (

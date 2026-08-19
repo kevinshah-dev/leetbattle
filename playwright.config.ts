@@ -46,7 +46,7 @@ export default defineConfig({
     {
       name: "chromium",
       dependencies: ["clerk-setup"],
-      testMatch: /duel\.e2e\.spec\.ts/,
+      testMatch: /(?:duel|ai-ml-arena)\.e2e\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1440, height: 900 },

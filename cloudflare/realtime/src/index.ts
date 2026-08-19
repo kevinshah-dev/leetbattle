@@ -796,7 +796,7 @@ export class RoomHub extends DurableObject<Env> {
       let nextWakeAt: number | null = null;
       let shouldBroadcast = false;
       let leaseResult = { refreshed: 0, reactivated: 0 };
-      await withRealtimeRuntime(this.env, async ({ db, matches }) => {
+      await withRealtimeRuntime(this.env, async ({ db, matches, arena }) => {
         try {
           shouldBroadcast =
             (await matches.advanceCountdown(matchId)) || shouldBroadcast;
@@ -822,6 +822,21 @@ export class RoomHub extends DurableObject<Env> {
           shouldBroadcast;
         shouldBroadcast =
           (await matches.recoverStaleExecutionsForMatch(matchId)) > 0 ||
+          shouldBroadcast;
+        try {
+          shouldBroadcast =
+            (await arena.processAnswerDeadlineForMatch(matchId)) ||
+            shouldBroadcast;
+        } catch (error) {
+          if (
+            !(error instanceof DomainError) ||
+            error.code !== "MATCH_NOT_FOUND"
+          ) {
+            throw error;
+          }
+        }
+        shouldBroadcast =
+          (await arena.recoverEvaluationForMatch(matchId)) > 0 ||
           shouldBroadcast;
         nextWakeAt = await nextMatchWakeAt(db, matchId);
       });

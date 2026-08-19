@@ -8,6 +8,7 @@ import {
   ApiError,
   createRoom,
   getProfile,
+  type ChallengeType,
   type Difficulty,
   type MatchMode,
 } from "./api-client";
@@ -22,20 +23,40 @@ const difficulties: Array<{
   {
     value: "EASY",
     label: "Easy",
-    description: "Clean fundamentals and a quick opening round.",
+    description: "Foundational thinking and a quick opening round.",
     ticks: 1,
   },
   {
     value: "MEDIUM",
     label: "Medium",
-    description: "Layered logic with room for a comeback.",
+    description: "Layered reasoning with room for a comeback.",
     ticks: 2,
   },
   {
     value: "HARD",
     label: "Hard",
-    description: "Deep constraints. Every minute matters.",
+    description: "Deep tradeoffs. Every minute matters.",
     ticks: 3,
+  },
+];
+
+const challenges: Array<{
+  value: ChallengeType;
+  label: string;
+  description: string;
+  marker: string;
+}> = [
+  {
+    value: "CODING",
+    label: "Coding",
+    description: "Write code and clear the server's hidden test suite.",
+    marker: "</>",
+  },
+  {
+    value: "AI_ML",
+    label: "AI/ML Arena",
+    description: "Explain an AI or ML concept in a scored prose answer.",
+    marker: "AI",
   },
 ];
 
@@ -47,17 +68,25 @@ const modes: Array<{
 }> = [
   {
     value: "DUEL",
-    label: "Private battle",
+    label: "Private Duel",
     description: "Invite one rival. The result counts toward your record.",
     marker: "VS",
   },
   {
     value: "PRACTICE",
-    label: "Practice mode",
+    label: "Solo Practice",
     description: "Solve alone. Clear the hidden suite with no record change.",
     marker: "1P",
   },
 ];
+
+function createReturnTo(mode: MatchMode, challengeType: ChallengeType) {
+  const query = new URLSearchParams();
+  if (mode === "PRACTICE") query.set("mode", "practice");
+  if (challengeType === "AI_ML") query.set("challenge", "ai-ml");
+  const suffix = query.toString();
+  return suffix ? `/battle/new?${suffix}` : "/battle/new";
+}
 
 export function CreateBattlePanel({
   initialMode = "DUEL",
@@ -66,10 +95,20 @@ export function CreateBattlePanel({
 }) {
   const router = useRouter();
   const { isLoaded, isSignedIn } = useUser();
+  const [challengeType, setChallengeType] = useState<ChallengeType>("CODING");
   const [mode, setMode] = useState<MatchMode>(initialMode);
   const [difficulty, setDifficulty] = useState<Difficulty>("MEDIUM");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (
+      new URLSearchParams(window.location.search).get("challenge") !== "ai-ml"
+    )
+      return;
+    const timer = window.setTimeout(() => setChallengeType("AI_ML"), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -79,23 +118,21 @@ export function CreateBattlePanel({
     }
     void getProfile().then(({ profile }) => {
       if (!profile) {
-        const returnTo =
-          mode === "PRACTICE" ? "/battle/new?mode=practice" : "/battle/new";
+        const returnTo = createReturnTo(mode, challengeType);
         router.replace(`/onboarding?returnTo=${encodeURIComponent(returnTo)}`);
       }
     });
-  }, [isLoaded, isSignedIn, mode, router]);
+  }, [challengeType, isLoaded, isSignedIn, mode, router]);
 
   async function handleCreate() {
     setCreating(true);
     setError("");
     try {
-      const room = await createRoom(difficulty, mode);
+      const room = await createRoom({ challengeType, difficulty, mode });
       router.push(`/lobby/${room.roomCode}`);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "PROFILE_REQUIRED") {
-        const returnTo =
-          mode === "PRACTICE" ? "/battle/new?mode=practice" : "/battle/new";
+        const returnTo = createReturnTo(mode, challengeType);
         router.push(`/onboarding?returnTo=${encodeURIComponent(returnTo)}`);
         return;
       }
@@ -112,38 +149,81 @@ export function CreateBattlePanel({
     <div className="create-layout">
       <div className="create-layout__intro">
         <p className="eyebrow">
-          {mode === "PRACTICE" ? "Solo training run" : "New private room"}
+          {challengeType === "AI_ML"
+            ? "AI/ML Arena"
+            : mode === "PRACTICE"
+              ? "Solo training run"
+              : "New private room"}
         </p>
         <h1>
-          {mode === "PRACTICE"
-            ? "Train against the suite."
-            : "Choose the terrain."}
+          {challengeType === "AI_ML"
+            ? "Make the strongest case."
+            : mode === "PRACTICE"
+              ? "Train against the suite."
+              : "Choose the terrain."}
         </h1>
         <p>
-          {mode === "PRACTICE"
-            ? "Pick a difficulty, choose your language, and see whether your solution can clear every hidden test."
-            : "You control only the difficulty. The server keeps the problem sealed until both players choose a language and lock in."}
+          {challengeType === "AI_ML"
+            ? mode === "PRACTICE"
+              ? "Answer one theoretical AI or ML question in 500 words or fewer. The server scores your final answer against a private rubric."
+              : "Both players receive the same sealed AI or ML question and ten minutes to submit one final answer."
+            : mode === "PRACTICE"
+              ? "Pick a difficulty, choose your language, and see whether your solution can clear every hidden test."
+              : "You control only the difficulty. The server keeps the problem sealed until both players choose a language and lock in."}
         </p>
         <div
           className="sealed-problem"
-          aria-label="Problem selection is sealed"
+          aria-label={`${challengeType === "AI_ML" ? "Question" : "Problem"} selection is sealed`}
         >
           <span aria-hidden="true" className="sealed-problem__lock" />
           <div>
-            <strong>Problem sealed</strong>
+            <strong>
+              {challengeType === "AI_ML" ? "Question sealed" : "Problem sealed"}
+            </strong>
             <small>
               {mode === "PRACTICE"
-                ? "Reveals when you start the practice run"
-                : "Reveals after both players are ready"}
+                ? `Reveals when you start the ${challengeType === "AI_ML" ? "arena run" : "practice run"}`
+                : `Reveals after both players are ready`}
             </small>
           </div>
         </div>
       </div>
       <PixelPanel className="difficulty-panel" label="CONFIGURE GAME">
+        <p className="config-label">Select challenge</p>
+        <div
+          aria-label="Challenge"
+          className="mode-options challenge-options"
+          role="radiogroup"
+        >
+          {challenges.map((option) => (
+            <button
+              aria-checked={challengeType === option.value}
+              className="mode-option"
+              key={option.value}
+              onClick={() => setChallengeType(option.value)}
+              role="radio"
+              type="button"
+            >
+              <span aria-hidden="true" className="mode-option__marker">
+                {option.marker}
+              </span>
+              <span>
+                <strong>{option.label}</strong>
+                <small>{option.description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="config-label">Select mode</p>
         <div aria-label="Game mode" className="mode-options" role="radiogroup">
           {modes.map((option) => (
             <button
               aria-checked={mode === option.value}
+              aria-label={
+                option.value === "PRACTICE"
+                  ? "Practice mode — Solo Practice"
+                  : "Private Duel"
+              }
               className="mode-option"
               key={option.value}
               onClick={() => setMode(option.value)}
@@ -155,7 +235,11 @@ export function CreateBattlePanel({
               </span>
               <span>
                 <strong>{option.label}</strong>
-                <small>{option.description}</small>
+                <small>
+                  {challengeType === "AI_ML" && option.value === "PRACTICE"
+                    ? "Answer alone for a rubric score with no record change."
+                    : option.description}
+                </small>
               </span>
             </button>
           ))}
@@ -200,8 +284,12 @@ export function CreateBattlePanel({
           <StatusLamp
             label={
               mode === "PRACTICE"
-                ? "SOLO · RECORD UNCHANGED"
-                : "INVITE WILL BE UNLISTED"
+                ? challengeType === "AI_ML"
+                  ? "SOLO SCORE · RECORD UNCHANGED"
+                  : "SOLO · RECORD UNCHANGED"
+                : challengeType === "AI_ML"
+                  ? "PRIVATE ARENA · RECORD COUNTS"
+                  : "INVITE WILL BE UNLISTED"
             }
             tone="cyan"
           />
@@ -214,7 +302,9 @@ export function CreateBattlePanel({
                 ? "Starting practice…"
                 : "Minting room…"
               : mode === "PRACTICE"
-                ? "Start practice"
+                ? challengeType === "AI_ML"
+                  ? "Start arena practice"
+                  : "Start practice"
                 : "Create battle"}
           </ArcadeButton>
         </div>

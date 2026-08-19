@@ -42,6 +42,18 @@ describe("client bundle privacy scanner", () => {
     });
   });
 
+  it("allows public SDKs to reference secret environment-variable names", async () => {
+    const staticDirectory = await temporaryStaticDirectory();
+    await writeFile(
+      join(staticDirectory, "chunk.js"),
+      "CLERK_SECRET_KEY|OPENAI_API_KEY|DATABASE_URL|RUNNER_INTERNAL_SECRET",
+    );
+
+    await expect(scanClientStatic(staticDirectory)).resolves.toMatchObject({
+      filesScanned: 1,
+    });
+  });
+
   it.each(FORBIDDEN_CLIENT_SENTINELS)(
     "rejects $label",
     async ({ label, value }) => {
@@ -54,6 +66,18 @@ describe("client bundle privacy scanner", () => {
       await expect(scanClientStatic(staticDirectory)).rejects.toThrow(label);
     },
   );
+
+  it("rejects an exact configured secret value", async () => {
+    const staticDirectory = await temporaryStaticDirectory();
+    const secret = "sk-dynamic-secret-value-never-publish";
+    await writeFile(join(staticDirectory, "chunk.js"), `prefix${secret}suffix`);
+
+    await expect(
+      scanClientStatic(staticDirectory, {
+        secretEnvironment: { OPENAI_API_KEY: secret },
+      }),
+    ).rejects.toThrow("OPENAI_API_KEY configured secret value");
+  });
 
   it("fails closed when the post-build static directory is absent", async () => {
     const root = await mkdtemp(join(tmpdir(), "leetbattle-missing-static-"));

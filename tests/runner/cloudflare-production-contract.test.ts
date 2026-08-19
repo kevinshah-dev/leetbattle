@@ -30,7 +30,7 @@ describe("Cloudflare production runner contract (no Docker required)", () => {
     for (const source of imageSources) {
       expect(source).toMatch(/^docker\.io\/.+@sha256:[0-9a-f]{64}$/);
     }
-    expect(dockerfile).toContain("cloudflare/sandbox:0.12.4@sha256:");
+    expect(dockerfile).toContain("cloudflare/sandbox:0.12.7@sha256:");
     expect(dockerfile).toContain("eclipse-temurin:21.0.8_9-jdk-jammy@sha256:");
     expect(dockerfile).toContain("ARG PYTHON_VERSION=3.13.5");
     expect(dockerfile).toContain("ARG PYTHON_SHA256=");
@@ -88,9 +88,7 @@ describe("Cloudflare production runner contract (no Docker required)", () => {
     expect(dockerfile).toContain(
       "COPY --from=guard-builder /tmp/submission-guard /opt/leetbattle/submission-guard",
     );
-    expect(dockerfile).toContain(
-      "ldd /opt/leetbattle/submission-guard",
-    );
+    expect(dockerfile).toContain("ldd /opt/leetbattle/submission-guard");
 
     expect(supervisor).toContain(
       'readonly SUBMISSION_GUARD="/opt/leetbattle/submission-guard"',
@@ -101,7 +99,10 @@ describe("Cloudflare production runner contract (no Docker required)", () => {
       '"${runtime_environment[@]}"',
     ]) {
       expect(supervisor.indexOf(environment)).toBeLessThan(
-        supervisor.indexOf('"$SUBMISSION_GUARD"', supervisor.indexOf(environment)),
+        supervisor.indexOf(
+          '"$SUBMISSION_GUARD"',
+          supervisor.indexOf(environment),
+        ),
       );
     }
 

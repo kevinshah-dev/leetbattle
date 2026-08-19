@@ -593,8 +593,13 @@ async function runMaintenance(): Promise<void> {
   await services.matches.expireStaleSessions();
   await services.matches.processDueDisconnects();
   await services.matches.recoverStaleExecutions();
+  await services.arena.processDueAnswerDeadlines(100, {
+    evaluateImmediately: false,
+  });
+  await services.arena.recoverEvaluations(4, 4);
   await services.matches.purgeOldRealtimeSessions();
   await services.realtimeTickets.purgeExpiredUses();
+  await services.judgeRequestBudget.purgeExpiredReservations();
 }
 
 async function shutdown(): Promise<void> {

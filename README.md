@@ -1,9 +1,10 @@
 # LeetBattle
 
-LeetBattle supports private two-player coding duels and single-player Practice
-Mode. Duels share one server-owned start time and award the earliest accepted
-submission; practice sessions use the same hidden judge without an opponent or
-any change to the player's win/loss record.
+LeetBattle supports private two-player duels and single-player Practice Mode
+across coding and written AI/ML challenges. Coding duels award the earliest
+accepted submission. AI/ML rounds use a sealed, versioned question and an
+anonymous rubric-based judgment. Practice never changes the player's win/loss
+record.
 
 This repository is a standalone application. It does not use or modify any sibling game or the shared stats API.
 
@@ -13,6 +14,7 @@ This repository is a standalone application. It does not use or modify any sibli
 - Docker Engine or Docker Desktop with the standard `/var/run/docker.sock`
 - A PostgreSQL 18-compatible database (the Compose setup supplies one)
 - A Clerk application with two test accounts
+- An OpenAI API key for live AI/ML judging (unit tests use a fake judge)
 - About 4 GB of memory available to Docker for the web, database, and isolated judge containers
 
 The supplied runner invokes the Docker CLI and the Compose topology mounts the
@@ -30,14 +32,22 @@ supported without adapting the runner command and socket mount.
 3. Replace all four internal-secret placeholders. Generate each value
    independently with `openssl rand -base64 32`; startup rejects the published
    placeholders, values shorter than 32 bytes, and reused values.
-4. Install dependencies and build the pinned execution images:
+4. For live AI/ML judging, set `OPENAI_API_KEY`. Keep
+   `OPENAI_JUDGE_MODEL=gpt-5.4-nano` and
+   `OPENAI_JUDGE_MAX_DAILY_REQUESTS=1000`,
+   `OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER=50`, and
+   `OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH=6` unless you have deliberately
+   selected reviewed rolling-24-hour outbound-attempt limits. Never expose these
+   variables to browser code or the coding runner.
+5. Install dependencies and build the pinned execution images:
 
    ```bash
    npm ci
    npm run runner:images
    ```
 
-5. Start PostgreSQL, migrate, and seed the seven public problem records:
+6. Start PostgreSQL, migrate, and seed seven coding problems plus the versioned
+   20-question AI/ML registry:
 
    ```bash
    docker compose up -d postgres
@@ -45,7 +55,7 @@ supported without adapting the runner command and socket mount.
    npm run db:seed
    ```
 
-6. Start the web app, WebSocket service, and isolated runner service:
+7. Start the web app, WebSocket service, and isolated runner service:
 
    ```bash
    npm run dev
@@ -69,12 +79,14 @@ To run everything through Docker after building the two judge images:
 docker compose up --build
 ```
 
-Compose waits for PostgreSQL, applies migrations, idempotently seeds the seven
-problem records, verifies the runner process, Docker daemon, and both judge
-images, and then admits the realtime and web services. The runner container
-mounts the local Docker socket but does not publish its HTTP port to the host.
-PostgreSQL is published on loopback only for the host-development commands
-above. See the security boundary below before deploying.
+Compose waits for PostgreSQL, applies migrations, idempotently seeds the coding
+problems and AI/ML registry, verifies the runner process, Docker daemon, and both
+judge images, and then admits the realtime and web services. OpenAI judge
+configuration is passed only to web and realtime; the runner container never
+receives it. The runner mounts the local Docker socket but does not publish its
+HTTP port to the host. PostgreSQL is published on loopback only for the
+host-development commands above. See the security boundary below before
+deploying.
 
 ## Commands
 
@@ -82,7 +94,7 @@ above. See the security boundary below before deploying.
 | -------------------------- | ------------------------------------------------------------------------------------------- |
 | `npm run dev`              | Start Next.js, the WebSocket service, and the runner service                                |
 | `npm run db:migrate`       | Apply idempotent SQL migrations                                                             |
-| `npm run db:seed`          | Register exactly seven public problem records idempotently                                  |
+| `npm run db:seed`          | Register seven coding problems and 20 versioned AI/ML questions idempotently                |
 | `npm run runner:images`    | Build the pinned Python 3.13 and Java 21 execution images                                   |
 | `npm run format:check`     | Check formatting                                                                            |
 | `npm run lint`             | Run ESLint, including React and accessibility rules                                         |
@@ -90,7 +102,7 @@ above. See the security boundary below before deploying.
 | `npm test`                 | Run unit and integration tests; Docker/DB suites skip with a stated reason when unavailable |
 | `npm run test:coverage`    | Run tests with V8 coverage                                                                  |
 | `npm run test:e2e:list`    | Discover the opt-in real-browser tests without starting the stack or browser                |
-| `npm run test:e2e`         | Run the environment-gated duel and solo-practice Chromium flows against the real stack      |
+| `npm run test:e2e`         | Run the environment-gated coding and AI/ML duel/practice Chromium flows                     |
 | `npm run test:e2e:install` | Install the pinned Playwright Chromium binary                                               |
 | `npm run build`            | Create the production Next.js build                                                         |
 | `npm run build:cloudflare` | Build the OpenNext Worker and scan it for private judge material                            |
@@ -104,39 +116,38 @@ above. See the security boundary below before deploying.
 
 The Playwright suite is an opt-in production-boundary check. It signs existing
 users into the configured Clerk instance with Clerk's official testing helper,
-then exercises the real duel and solo-practice paths: application APIs,
+then exercises the coding and AI/ML duel and solo-practice paths: application APIs,
 PostgreSQL state, WebSocket updates, Docker-backed Python and Java execution,
 accepted hidden-suite submissions, winner ordering, rematch, cancellation,
-history, draft restoration, and practice record isolation. Canonical source is
+AI/ML scoring and answer privacy, history detail, draft restoration, and
+practice record isolation. Canonical source is
 imported from the private problem bank only by the Node-side test process and
 typed into Monaco; it is never included in an application entry point or client
-bundle. The suite does not enable an application auth bypass or replace the
-judge.
+bundle. Coding still uses the real sandbox runner. AI/ML uses a deterministic,
+network-free server adapter so CI never needs an OpenAI account. That adapter
+has no browser toggle or auth bypass and fails closed unless the real E2E flag
+is enabled and both the application and Playwright use the same loopback origin.
 
 Before running it:
 
 1. Use a Clerk development/test instance with two different existing users.
    The Clerk instance must match the keys used to build/run LeetBattle.
-2. Build both judge images and start the complete healthy stack. For example:
-
-   ```bash
-   npm run runner:images
-   docker compose up --build -d
-   ```
-
-3. Install the pinned browser once:
+2. Install the pinned browser once:
 
    ```bash
    npm run test:e2e:install
    ```
 
-4. Set the following in `.env.local` (never commit real emails or keys):
+3. Set the following in an ignored `.env` for Docker Compose (or export the
+   values into the web process) and in `.env.local` for Playwright. Never commit
+   real emails or keys:
 
    ```dotenv
    RUN_REAL_E2E=1
    E2E_BASE_URL=http://localhost:3000
    E2E_CLERK_HOST_EMAIL=host+clerk_test@example.com
    E2E_CLERK_GUEST_EMAIL=guest+clerk_test@example.com
+   LEETBATTLE_E2E_FAKE_AI_ML_JUDGE=1
    ```
 
    `CLERK_SECRET_KEY` and either `CLERK_PUBLISHABLE_KEY` or the app's existing
@@ -145,7 +156,17 @@ Before running it:
    `E2E_BASE_URL` must have the same origin as `APP_ORIGIN`; this preserves the
    real origin-bound Clerk session when the challenger follows the invite.
    The official helper creates real Clerk sessions using the secret key; it
-   does not store account passwords or alter LeetBattle runtime behavior.
+   does not store account passwords or alter LeetBattle runtime behavior. Keep
+   `OPENAI_API_KEY` blank in this E2E environment; the guarded fake does not use
+   it, and a missing fake configuration then cannot make a provider request.
+
+4. Build both coding judge images and start the complete healthy stack after
+   setting those values. For example:
+
+   ```bash
+   npm run runner:images
+   docker compose up --build -d
+   ```
 
 5. Run:
 
@@ -154,10 +175,11 @@ Before running it:
    ```
 
 With `RUN_REAL_E2E` disabled or required account/key values absent, the Clerk
-setup, duel, and practice tests are reported as skipped with the exact
-missing prerequisite. Once explicitly enabled, an unreachable app is also
-reported as a failure; broken database, realtime, or runner behavior discovered
-after sign-in fails the test as well, so infrastructure regressions are not hidden.
+setup, duel, and practice tests are reported as skipped with the exact missing
+prerequisite. AI/ML cases additionally require the guarded fake-judge flag.
+Once explicitly enabled, an unreachable app is also reported as a failure;
+broken database, realtime, runner, or arena behavior discovered after sign-in
+fails the test as well, so infrastructure regressions are not hidden.
 
 ## Architecture
 
@@ -170,14 +192,23 @@ Next.js API ── internal bearer secret ──> runner service
   ├── local ── fixed Docker commands ──> fresh Python/Java container
   └── production ── Sandbox SDK ──> fresh Cloudflare Sandbox VM
                                       └── trusted supervisor ──> submission child
+
+Next.js API / realtime deadline alarm ──> immutable AI/ML evaluation
+  └── server-only OpenAI Responses API ──> strict structured judgment
 ```
 
-- PostgreSQL is authoritative for profiles, membership, match state, commands, events, executions, results, records, reconnect deadlines, and rematch votes.
+- PostgreSQL is authoritative for profiles, membership, match state, commands,
+  events, executions, AI/ML answers and evaluations, results, records, deadlines,
+  and rematch votes.
 - Match commands carry idempotency keys. State changes append monotonically versioned events with database timestamps.
 - The WebSocket service sends an authoritative snapshot before later event versions. It is a delivery layer, not the source of truth.
 - The synchronous judge coordinator records receipt order before execution and persists completion before responding. Important transitions are not left to an untracked browser or background promise.
 - Hidden fixtures and canonical solutions are isolated from the public problem catalog. Browser payloads receive only statements, samples, starter code, aggregate progress, and player-safe summaries.
 - Raw submitted source is sent to the runner only for that execution. PostgreSQL retains its SHA-256 hash and bounded verdict summary, not the source itself.
+- Raw normalized AI/ML answers are retained for participant-authorized history.
+  Private references, rubrics, and judge instructions remain server-only; raw
+  answers and private judge material are excluded from general logs and
+  pre-result realtime events.
 
 ## Judge and security boundary
 
@@ -190,6 +221,16 @@ and fixed function contracts, never interpolate source into a shell command,
 and explicitly terminate submitted processes on completion or timeout.
 
 The local images pin Python 3.13 and Java 21. Java compilation time is recorded separately from solution runtime. `Run samples` uses only published cases; `Submit solution` uses hidden cases and never returns hidden inputs, expected values, per-case identities, stack traces, or captured hidden-case output.
+
+AI/ML judging uses the official OpenAI SDK and Responses API with strict
+Structured Outputs, `store: false`, no tools, low reasoning effort, and a fixed
+output limit. The server persists one anonymous immutable snapshot and reuses it
+for at most three recovery attempts; it never performs a close-score second
+opinion or silently changes models. Retryable provider or budget failures keep
+answers locked for idempotent recovery; permanent failures finish as
+`JUDGE_FAILED`/no-contest. Neither path changes records. The OpenAI key belongs only in web
+and realtime judging runtimes, never browser assets, PostgreSQL, logs, or the
+coding runner.
 
 Authentication is checked in every protected route. Room membership is checked again for every snapshot, command, history query, and WebSocket ticket. WebSocket tickets are short-lived and single-use. Invite tokens contain 256 bits of entropy and are stored only as hashes. Usernames are unique through PostgreSQL `citext` and a database constraint.
 
@@ -204,7 +245,8 @@ containers.
 
 The prepared Cloudflare production topology uses an OpenNext web Worker,
 cache-disabled Hyperdrive to external PostgreSQL, a hibernating `RoomHub`
-Durable Object per match, and a private Cloudflare Sandbox runner. Every
+Durable Object per match, OpenAI judging from web/realtime only, and a private
+Cloudflare Sandbox runner. Every
 execution gets a fresh `standard-2` Sandbox VM with public Internet access
 disabled. A fixed, root-owned supervisor runs directly in that VM, then launches
 the compiler or runtime in a separate process group after dropping to UID/GID
@@ -228,7 +270,9 @@ migrations still require coordinated manual release steps.
 Follow the copy-paste deployment order, first-deploy secret flow, Custom Domain
 setup, validation, rollback, and troubleshooting guide in
 [`docs/cloudflare-deployment.md`](docs/cloudflare-deployment.md). The required
-order is runner, realtime, then web.
+order is runner, realtime, then web. The AI/ML data, privacy, retry, and
+retention contract is documented in
+[`docs/ai-ml-arena.md`](docs/ai-ml-arena.md).
 
 ## Match guarantees
 
@@ -240,7 +284,18 @@ order is runner, realtime, then web.
 - Winner order is receipt timestamp, then trusted control-plane runtime for equal timestamps, then immutable server sequence. A later accepted result waits while an earlier submission is still in flight.
 - Finalization and win/loss application are transactional and idempotent.
 - In duels, a disconnected active player has 60 seconds to reconnect. One absent player forfeits; two absent players produce a no-contest. Accepted in-flight work remains eligible. Practice disconnects preserve the solo attempt without a forfeit deadline.
-- Mutual rematch votes within 30 seconds create one fresh round, reset languages, and avoid the previous problem when another problem exists at that difficulty.
+- Mutual rematch votes within 30 seconds create one fresh round, reset readiness
+  (and coding language selection), and avoid the previous challenge when another
+  one exists at that difficulty.
+- AI/ML rounds reveal a difficulty-matched question only at `ACTIVE`, persist a
+  ten-minute answer deadline, enforce one immutable final answer per player,
+  and resolve deadlines from server alarms even when browsers disconnect.
+- A single blank loses automatically while its opponent is still scored. Two
+  duel blanks are a 0–0 no-contest; blank practice scores zero. Neither case
+  makes an unnecessary provider call.
+- AI/ML evaluations have one immutable anonymous mapping. Completed duel
+  judgment and shared-record changes are atomic; practice, no-contest, and
+  judge failure never change records.
 
 ## Deployment assumptions
 
@@ -248,9 +303,15 @@ order is runner, realtime, then web.
 - The WebSocket and web services must reach the same PostgreSQL database. Cloudflare `RoomHub` alarms own active-match deadlines; a six-hour global recovery sweep is the failure backstop and folds in cleanup once daily.
 - Set the final Clerk publishable key and `wss://` realtime URL at image-build time, then rebuild whenever either public value changes.
 - Set `APP_ORIGIN` to the public HTTPS origin, terminate TLS before the app, and use `wss://` for real-time traffic.
-- Keep `CLERK_SECRET_KEY`, database credentials, ticket/invite secrets, and the runner bearer secret in a managed secret store.
+- Keep `CLERK_SECRET_KEY`, `OPENAI_API_KEY`, database credentials,
+  ticket/invite secrets, and the runner bearer secret in a managed secret store.
+  Only the web and realtime judging runtimes receive `OPENAI_API_KEY`; the
+  runner must not.
 - Restrict the runner endpoint to a private network and apply egress controls outside the execution containers as defense in depth.
-- Back up PostgreSQL and monitor execution queue age, infrastructure verdicts, reconnect sweeps, and event-delivery lag without logging player source or hidden data.
+- Back up PostgreSQL and monitor execution queue age, infrastructure verdicts,
+  AI/ML completion/failure class and token use, budget-circuit state, reconnect
+  sweeps, and event-delivery lag without logging player source, prose answers,
+  or hidden data.
 
 ## Known MVP limits
 
@@ -259,4 +320,7 @@ order is runner, realtime, then web.
 - LeetBattle protects server state, membership, hidden material, rate limits, and execution isolation. It cannot prevent a player from using another website, an AI tool, or another device, and does not attempt invasive monitoring.
 - Clerk credentials and a Docker runtime are external prerequisites. Docker-backed canonical and adversarial judge tests explicitly skip rather than simulate execution when Docker is unavailable.
 
-The compact visual system and desktop layout rationale are documented in [`docs/design-system.md`](docs/design-system.md).
+The compact visual system and desktop layout rationale are documented in
+[`docs/design-system.md`](docs/design-system.md). AI/ML question versioning,
+OpenAI recovery, and participant-only data retention are documented in
+[`docs/ai-ml-arena.md`](docs/ai-ml-arena.md).

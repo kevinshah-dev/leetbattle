@@ -67,7 +67,7 @@ FROM docker.io/library/eclipse-temurin:21.0.8_9-jdk-jammy@sha256:adb9b2d15adf183
 # Cloudflare runs every Sandbox in its own resource-limited VM. The final
 # image extends the pinned glibc Sandbox runtime directly instead of starting
 # an unsupported nested daemon that cannot receive delegated cgroups.
-FROM docker.io/cloudflare/sandbox:0.12.4@sha256:e83bb4d6d9748b93a4b876ce0852b5e93d8e0893da10c59d425770aef0d73738
+FROM docker.io/cloudflare/sandbox:0.12.7@sha256:6d741713aef266e8ae0831a5709c6f2d7b77b4952ac79b549f4f4e380af86fbe
 
 USER root
 
@@ -102,7 +102,7 @@ RUN groupadd --gid 65532 leetbattle-runner \
     && ldd /opt/leetbattle/submission-guard \
       | grep -F 'libseccomp.so.2'
 
-ENV SANDBOX_VERSION="0.12.4"
+ENV SANDBOX_VERSION="0.12.7"
 ENV PYTHON_POOL_MIN_SIZE="0"
 ENV JAVASCRIPT_POOL_MIN_SIZE="0"
 ENV TYPESCRIPT_POOL_MIN_SIZE="0"

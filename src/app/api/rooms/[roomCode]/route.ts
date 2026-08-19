@@ -18,10 +18,22 @@ export async function GET(
         actorUserId,
         roomCode,
       );
-      const authoritative = await services.matches.getSnapshot(
+      let authoritative = await services.matches.getSnapshot(
         actorUserId,
         roomId,
       );
+      if (
+        authoritative.challengeType === "AI_ML" &&
+        authoritative.state === "ACTIVE" &&
+        (await services.arena.processAnswerDeadlineForMatch(
+          authoritative.matchId,
+        ))
+      ) {
+        authoritative = await services.matches.getSnapshotByMatch(
+          actorUserId,
+          authoritative.matchId,
+        );
+      }
       const snapshot = await presentRoomSnapshot({
         actorUserId,
         inviteToken: roomCode,

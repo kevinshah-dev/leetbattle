@@ -16,6 +16,7 @@ const HTTP_METHODS = new Set([
 ]);
 
 const EXPECTED_PROTECTED_HANDLERS = {
+  "history/[matchId]/route.ts": ["GET"],
   "history/route.ts": ["GET"],
   "profile/route.ts": ["GET", "POST"],
   "rooms/[roomCode]/commands/route.ts": ["POST"],

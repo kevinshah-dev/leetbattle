@@ -1,9 +1,20 @@
 import postgres from "postgres";
 
+import {
+  getPublicAiMlQuestion,
+  listPublicAiMlQuestionsByDifficulty,
+} from "@/arena/public";
 import { listPublicProblemsByDifficulty } from "@/problems/public/catalog";
+import {
+  OPENAI_JUDGE_DEFAULT_MODEL,
+  OpenAiJudgeAdapter,
+  PostgresAiMlJudgeRequestBudget,
+} from "@/server/ai-ml";
+import { AiMlArenaService } from "@/server/arena/arena-service";
 import type { Database } from "@/server/db/client";
 import type {
   Difficulty,
+  AiMlQuestionCatalog,
   ProblemCatalog,
   PublicProblemRef,
 } from "@/server/domain/types";
@@ -27,9 +38,39 @@ const problemCatalog: ProblemCatalog = Object.freeze({
   },
 });
 
+const aiMlCatalog: AiMlQuestionCatalog = Object.freeze({
+  listByDifficulty(difficulty: Difficulty) {
+    return listPublicAiMlQuestionsByDifficulty(difficulty).map((question) => ({
+      id: question.id,
+      version: question.version,
+      title: question.title,
+      prompt: question.prompt,
+      difficulty: question.difficulty,
+      category: question.category,
+      answerConstraints: { ...question.answerConstraints },
+    }));
+  },
+  get(id: string, version: number) {
+    const question = getPublicAiMlQuestion(id, version);
+    return question
+      ? {
+          id: question.id,
+          version: question.version,
+          title: question.title,
+          prompt: question.prompt,
+          difficulty: question.difficulty,
+          category: question.category,
+          answerConstraints: { ...question.answerConstraints },
+        }
+      : null;
+  },
+});
+
 export interface RealtimeRuntime {
   readonly db: Database;
   readonly matches: MatchEngine;
+  readonly arena: AiMlArenaService;
+  readonly judgeRequestBudget: PostgresAiMlJudgeRequestBudget;
   readonly tickets: RealtimeTicketService;
 }
 
@@ -53,6 +94,36 @@ function openDatabase(env: Env): Database {
     prepare: true,
     fetch_types: false,
   });
+}
+
+function maxDailyJudgeRequests(env: Env): number {
+  const value = Number(env.OPENAI_JUDGE_MAX_DAILY_REQUESTS ?? "1000");
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      "OPENAI_JUDGE_MAX_DAILY_REQUESTS must be a positive integer",
+    );
+  }
+  return value;
+}
+
+function maxDailyJudgeRequestsPerUser(env: Env): number {
+  const value = Number(env.OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER ?? "50");
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER must be a positive integer",
+    );
+  }
+  return value;
+}
+
+function maxDailyJudgeRequestsPerMatch(env: Env): number {
+  const value = Number(env.OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH ?? "6");
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH must be a positive integer",
+    );
+  }
+  return value;
 }
 
 export async function withDatabase<T>(
@@ -89,6 +160,7 @@ export async function withRealtimeRuntime<T>(
   assertDistinctRealtimeSecrets(env);
   return withDatabase(env, async (db) => {
     const matches = new MatchEngine(db, problemCatalog, {
+      aiMlCatalog,
       inviteSecret: env.ROOM_INVITE_SECRET,
     });
     const tickets = new RealtimeTicketService(
@@ -96,8 +168,29 @@ export async function withRealtimeRuntime<T>(
       matches,
       env.REALTIME_TICKET_SECRET,
     );
+    const requestedModel = env.OPENAI_JUDGE_MODEL || OPENAI_JUDGE_DEFAULT_MODEL;
+    const maxRequestsPerDay = maxDailyJudgeRequests(env);
+    const maxRequestsPerUserPerDay = maxDailyJudgeRequestsPerUser(env);
+    const maxRequestsPerMatchPerDay = maxDailyJudgeRequestsPerMatch(env);
+    const judgeRequestBudget = new PostgresAiMlJudgeRequestBudget(
+      db,
+      maxRequestsPerDay,
+      maxRequestsPerUserPerDay,
+      maxRequestsPerMatchPerDay,
+    );
+    const arena = new AiMlArenaService(
+      db,
+      new OpenAiJudgeAdapter({
+        apiKey: env.OPENAI_API_KEY,
+        model: requestedModel,
+        requestBudget: judgeRequestBudget,
+      }),
+      {
+        requestedModel,
+      },
+    );
 
-    return operation({ db, matches, tickets });
+    return operation({ db, matches, arena, judgeRequestBudget, tickets });
   });
 }
 
@@ -121,6 +214,25 @@ export async function nextMatchWakeAt(
       SELECT starts_at AS deadline
       FROM matches
       WHERE id = ${matchId} AND state = 'COUNTDOWN' AND starts_at IS NOT NULL
+
+      UNION ALL
+
+      SELECT answer_deadline_at AS deadline
+      FROM matches
+      WHERE id = ${matchId} AND challenge_type = 'AI_ML'
+        AND state = 'ACTIVE' AND answer_deadline_at IS NOT NULL
+
+      UNION ALL
+
+      SELECT CASE
+               WHEN evaluation.status = 'PENDING'
+                 THEN clock_timestamp() + interval '5 seconds'
+               WHEN evaluation.status = 'IN_PROGRESS'
+                 THEN evaluation.claimed_at + interval '180 seconds'
+             END AS deadline
+      FROM ai_ml_evaluations evaluation
+      WHERE evaluation.match_id = ${matchId}
+        AND evaluation.status IN ('PENDING', 'IN_PROGRESS')
 
       UNION ALL
 

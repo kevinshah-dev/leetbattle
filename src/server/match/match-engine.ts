@@ -12,6 +12,10 @@ import {
 } from "@/server/domain/state-machine";
 import { REALTIME_SESSION_STALE_AFTER_SECONDS } from "@/server/realtime/timing";
 import type {
+  AiMlJudgeStatus,
+  AiMlQuestionCatalog,
+  AiMlQuestionRef,
+  ChallengeType,
   Difficulty,
   EndReason,
   ExecutionKind,
@@ -31,6 +35,7 @@ type Tx = postgres.TransactionSql;
 interface MatchRow {
   id: string;
   room_id: string;
+  challenge_type: ChallengeType;
   mode: MatchMode;
   round_number: number;
   state: MatchState;
@@ -39,6 +44,7 @@ interface MatchRow {
   problem_version: number | null;
   problem_title: string | null;
   starts_at: string | null;
+  answer_deadline_at: string | null;
   finished_at: string | null;
   rematch_deadline: string | null;
   rematch_created_match_id: string | null;
@@ -63,6 +69,7 @@ interface ParticipantRow {
   disconnected_at: string | null;
   reconnect_deadline: string | null;
   outcome: MatchSnapshot["players"][number]["outcome"];
+  submitted_at: string | null;
 }
 
 interface CommandReservation {
@@ -99,8 +106,10 @@ export interface MatchEngineOptions {
   sampleRateLimitSeconds?: number;
   failedSubmissionCooldownSeconds?: number;
   maxSourceBytes?: number;
+  answerDurationMs?: number;
   inviteSecret?: string;
   chooseIndex?: (length: number) => number;
+  aiMlCatalog?: AiMlQuestionCatalog;
 }
 
 const DEFAULTS = {
@@ -110,7 +119,13 @@ const DEFAULTS = {
   sampleRateLimitSeconds: 2,
   failedSubmissionCooldownSeconds: 10,
   maxSourceBytes: 64 * 1024,
+  answerDurationMs: 10 * 60 * 1_000,
 } as const;
+
+const EMPTY_AI_ML_CATALOG: AiMlQuestionCatalog = {
+  listByDifficulty: () => [],
+  get: () => null,
+};
 
 const MAX_POSTGRES_INTEGER = 2_147_483_647;
 const MAX_DURATION_MS = 999_999_999.999;
@@ -207,8 +222,11 @@ export function executionCompletedEventPayload(input: {
 }
 
 export class MatchEngine {
-  private readonly options: Required<Omit<MatchEngineOptions, "inviteSecret">>;
+  private readonly options: Required<
+    Omit<MatchEngineOptions, "inviteSecret" | "aiMlCatalog">
+  >;
   private readonly inviteSecret: string;
+  private readonly aiMlCatalog: AiMlQuestionCatalog;
 
   constructor(
     private readonly sql: Database,
@@ -227,8 +245,10 @@ export class MatchEngine {
         options.failedSubmissionCooldownSeconds ??
         DEFAULTS.failedSubmissionCooldownSeconds,
       maxSourceBytes: options.maxSourceBytes ?? DEFAULTS.maxSourceBytes,
+      answerDurationMs: options.answerDurationMs ?? DEFAULTS.answerDurationMs,
       chooseIndex: options.chooseIndex ?? ((length) => randomInt(length)),
     };
+    this.aiMlCatalog = options.aiMlCatalog ?? EMPTY_AI_ML_CATALOG;
     this.inviteSecret = requireInternalSecret(
       "ROOM_INVITE_SECRET",
       options.inviteSecret ?? process.env.ROOM_INVITE_SECRET,
@@ -361,9 +381,11 @@ export class MatchEngine {
     difficulty: Difficulty;
     idempotencyKey: string;
     mode?: MatchMode;
+    challengeType?: ChallengeType;
   }): Promise<{ inviteToken: string; snapshot: MatchSnapshot }> {
     requireActor(input.actorUserId);
     const mode = input.mode ?? "DUEL";
+    const challengeType = input.challengeType ?? "CODING";
     const inviteToken = this.inviteToken(
       input.actorUserId,
       input.idempotencyKey,
@@ -377,9 +399,11 @@ export class MatchEngine {
         idempotencyKey: input.idempotencyKey,
         commandType: "CREATE_ROOM",
         payload:
-          mode === "DUEL"
-            ? { difficulty: input.difficulty }
-            : { difficulty: input.difficulty, mode },
+          challengeType === "CODING"
+            ? mode === "DUEL"
+              ? { difficulty: input.difficulty }
+              : { difficulty: input.difficulty, mode }
+            : { difficulty: input.difficulty, mode, challengeType },
       });
       if (reservation.duplicate) {
         const existingRoomId = reservation.response?.roomId;
@@ -394,14 +418,18 @@ export class MatchEngine {
       }
 
       const [room] = await tx<{ id: string }[]>`
-        INSERT INTO rooms (invite_token_hash, host_user_id, difficulty, mode)
-        VALUES (${tokenHash}, ${input.actorUserId}, ${input.difficulty}, ${mode})
+        INSERT INTO rooms
+          (invite_token_hash, host_user_id, difficulty, mode, challenge_type)
+        VALUES
+          (${tokenHash}, ${input.actorUserId}, ${input.difficulty}, ${mode}, ${challengeType})
         RETURNING id
       `;
       if (!room) throw new Error("Room insert failed");
       const [match] = await tx<{ id: string }[]>`
-        INSERT INTO matches (room_id, round_number, difficulty)
-        VALUES (${room.id}, 1, ${input.difficulty})
+        INSERT INTO matches
+          (room_id, round_number, difficulty, mode, challenge_type)
+        VALUES
+          (${room.id}, 1, ${input.difficulty}, ${mode}, ${challengeType})
         RETURNING id
       `;
       if (!match) throw new Error("Match insert failed");
@@ -417,6 +445,7 @@ export class MatchEngine {
       await this.appendEvent(tx, match.id, "MATCH_CREATED", {
         difficulty: input.difficulty,
         mode,
+        challengeType,
         roundNumber: 1,
       });
       await this.completeCommand(tx, input.actorUserId, input.idempotencyKey, {
@@ -568,22 +597,42 @@ export class MatchEngine {
 
   private chooseProblem(
     difficulty: Difficulty,
-    excludeProblemId: string | null,
-  ): PublicProblemRef {
-    const all = this.catalog.listByDifficulty(difficulty).filter((problem) => {
-      return problem.difficulty === difficulty;
-    });
+    challengeType: ChallengeType,
+    previouslyUsedIds: readonly string[],
+    activeAiMlQuestions?: ReadonlySet<string>,
+  ): PublicProblemRef | AiMlQuestionRef {
+    const all = (
+      challengeType === "AI_ML"
+        ? this.aiMlCatalog.listByDifficulty(difficulty)
+        : this.catalog.listByDifficulty(difficulty)
+    ).filter(
+      (problem) =>
+        problem.difficulty === difficulty &&
+        (challengeType === "CODING" ||
+          activeAiMlQuestions?.has(`${problem.id}:${problem.version}`) ===
+            true),
+    );
     if (all.length === 0) {
       throw new DomainError(
         "NO_PROBLEM_AVAILABLE",
-        "No problem is available for this difficulty",
+        challengeType === "AI_ML"
+          ? "No AI/ML question is available for this difficulty"
+          : "No problem is available for this difficulty",
         503,
       );
     }
-    const withoutRepeat = all.filter(
-      (problem) => problem.id !== excludeProblemId,
+    const used = new Set(previouslyUsedIds);
+    const fresh = all.filter((problem) => !used.has(problem.id));
+    const previousId = previouslyUsedIds[0] ?? null;
+    const withoutImmediateRepeat = all.filter(
+      (problem) => problem.id !== previousId,
     );
-    const candidates = withoutRepeat.length > 0 ? withoutRepeat : all;
+    const candidates =
+      fresh.length > 0
+        ? fresh
+        : withoutImmediateRepeat.length > 0
+          ? withoutImmediateRepeat
+          : all;
     const index = this.options.chooseIndex(candidates.length);
     const selected = candidates[index];
     if (!selected) throw new Error("Problem chooser returned an invalid index");
@@ -616,6 +665,13 @@ export class MatchEngine {
         throw new DomainError(
           "INVALID_STATE",
           "Language is locked after the countdown starts",
+          409,
+        );
+      }
+      if (match.challenge_type === "AI_ML") {
+        throw new DomainError(
+          "INVALID_CHALLENGE_TYPE",
+          "AI/ML Arena does not use a programming language",
           409,
         );
       }
@@ -666,7 +722,11 @@ export class MatchEngine {
           409,
         );
       }
-      if (input.ready && !participant.language) {
+      if (
+        input.ready &&
+        match.challenge_type === "CODING" &&
+        !participant.language
+      ) {
         throw new DomainError(
           "LANGUAGE_REQUIRED",
           "Choose Python or Java first",
@@ -718,7 +778,11 @@ export class MatchEngine {
       `;
       if (
         participants.length === (match.mode === "PRACTICE" ? 1 : 2) &&
-        participants.every((player) => player.ready && player.language)
+        participants.every(
+          (player) =>
+            player.ready &&
+            (match.challenge_type === "AI_ML" || player.language !== null),
+        )
       ) {
         if (!participants.every((player) => player.live)) {
           throw new DomainError(
@@ -729,23 +793,55 @@ export class MatchEngine {
             409,
           );
         }
-        const [previous] = await tx<{ problem_id: string | null }[]>`
+        const previous = await tx<{ problem_id: string | null }[]>`
           SELECT problem_id FROM matches
           WHERE room_id = ${match.room_id} AND round_number < ${match.round_number}
-          ORDER BY round_number DESC LIMIT 1
+            AND challenge_type = ${match.challenge_type}
+            AND difficulty = ${match.difficulty}
+            AND problem_id IS NOT NULL
+          ORDER BY round_number DESC
         `;
+        const activeAiMlQuestions =
+          match.challenge_type === "AI_ML"
+            ? new Set(
+                (
+                  await tx<{ question_id: string; version: number }[]>`
+                    SELECT question_id, version
+                    FROM ai_ml_question_registry
+                    WHERE active AND difficulty = ${match.difficulty}
+                  `
+                ).map(
+                  (question) => `${question.question_id}:${question.version}`,
+                ),
+              )
+            : undefined;
         const problem = this.chooseProblem(
           match.difficulty,
-          previous?.problem_id ?? null,
+          match.challenge_type,
+          previous.flatMap((row) =>
+            row.problem_id === null ? [] : [row.problem_id],
+          ),
+          activeAiMlQuestions,
         );
         const [countdown] = await tx<{ starts_at: string }[]>`
+          WITH timing AS (
+            SELECT clock_timestamp()
+              + (${this.options.countdownMs} * interval '1 millisecond') AS starts_at
+          )
           UPDATE matches
           SET state = 'COUNTDOWN', problem_id = ${problem.id},
               problem_version = ${problem.version}, problem_title = ${problem.title},
-              starts_at = clock_timestamp() + (${this.options.countdownMs} * interval '1 millisecond'),
+              starts_at = timing.starts_at,
+              answer_deadline_at = CASE
+                WHEN challenge_type = 'AI_ML'
+                THEN timing.starts_at
+                  + (${this.options.answerDurationMs} * interval '1 millisecond')
+                ELSE NULL
+              END,
               updated_at = clock_timestamp()
+          FROM timing
           WHERE id = ${input.matchId} AND state = 'LOBBY'
-          RETURNING starts_at::text
+          RETURNING matches.starts_at::text
         `;
         if (countdown) {
           await this.appendEvent(tx, input.matchId, "COUNTDOWN_STARTED", {
@@ -763,13 +859,14 @@ export class MatchEngine {
 
   private async lockMatch(tx: Tx, matchId: string): Promise<MatchRow> {
     const [match] = await tx<MatchRow[]>`
-      SELECT m.id, m.room_id, r.mode, m.round_number, m.state, m.difficulty,
+      SELECT m.id, m.room_id, m.challenge_type, m.mode,
+             m.round_number, m.state, m.difficulty,
              m.problem_id, m.problem_version, m.problem_title, m.starts_at::text,
+             m.answer_deadline_at::text,
              m.finished_at::text, m.rematch_deadline::text,
              m.rematch_created_match_id, m.winner_user_id, m.end_reason,
              m.records_applied, m.version::text::bigint AS version
       FROM matches m
-      JOIN rooms r ON r.id = m.room_id
       WHERE m.id = ${matchId}
       FOR UPDATE OF m
     `;
@@ -787,7 +884,11 @@ export class MatchEngine {
       SELECT mp.clerk_user_id, mp.slot, p.username::text AS username, mp.language,
              mp.ready_at::text, mp.activity, mp.best_passed_count,
              mp.hidden_test_count, mp.cooldown_until::text, mp.active_execution_id,
-             mp.connected, mp.disconnected_at::text, mp.reconnect_deadline::text, mp.outcome
+             mp.connected, mp.disconnected_at::text, mp.reconnect_deadline::text, mp.outcome,
+             (SELECT answer.submitted_at::text
+              FROM ai_ml_answers answer
+              WHERE answer.match_id = mp.match_id
+                AND answer.clerk_user_id = mp.clerk_user_id) AS submitted_at
       FROM match_participants mp
       JOIN profiles p ON p.clerk_user_id = mp.clerk_user_id
       WHERE mp.match_id = ${matchId} AND mp.clerk_user_id = ${actorUserId}
@@ -829,12 +930,18 @@ export class MatchEngine {
       const match = await this.lockMatch(tx, matchId);
       if (match.state !== "COUNTDOWN") return false;
       const [advanced] = await tx<
-        { problem_id: string; problem_version: number; problem_title: string }[]
+        {
+          problem_id: string;
+          problem_version: number;
+          problem_title: string;
+          answer_deadline_at: string | null;
+        }[]
       >`
         UPDATE matches
         SET state = 'ACTIVE', updated_at = clock_timestamp()
         WHERE id = ${matchId} AND state = 'COUNTDOWN' AND starts_at <= clock_timestamp()
-        RETURNING problem_id, problem_version, problem_title
+        RETURNING problem_id, problem_version, problem_title,
+                  answer_deadline_at::text
       `;
       if (!advanced) return false;
       if (match.mode === "DUEL") {
@@ -854,14 +961,35 @@ export class MatchEngine {
             AND reconnect_deadline IS NULL
         `;
       }
-      await this.appendEvent(tx, matchId, "MATCH_ACTIVE", {
-        problem: {
-          id: advanced.problem_id,
-          version: advanced.problem_version,
-          title: advanced.problem_title,
-          difficulty: match.difficulty,
-        },
-      });
+      const activePayload: Record<string, unknown> =
+        match.challenge_type === "AI_ML"
+          ? {
+              question: (() => {
+                const question = this.aiMlCatalog.get(
+                  advanced.problem_id,
+                  advanced.problem_version,
+                );
+                if (!question)
+                  throw new Error("Selected AI/ML question is unavailable");
+                return {
+                  title: question.title,
+                  prompt: question.prompt,
+                  difficulty: question.difficulty,
+                  category: question.category,
+                  answerConstraints: question.answerConstraints,
+                };
+              })(),
+              answerDeadlineAt: advanced.answer_deadline_at,
+            }
+          : {
+              problem: {
+                id: advanced.problem_id,
+                version: advanced.problem_version,
+                title: advanced.problem_title,
+                difficulty: match.difficulty,
+              },
+            };
+      await this.appendEvent(tx, matchId, "MATCH_ACTIVE", activePayload);
       return true;
     });
   }
@@ -898,13 +1026,14 @@ export class MatchEngine {
       { now: string }[]
     >`SELECT clock_timestamp()::text AS now`;
     const [match] = await this.sql<MatchRow[]>`
-      SELECT m.id, m.room_id, r.mode, m.round_number, m.state, m.difficulty,
+      SELECT m.id, m.room_id, m.challenge_type, m.mode,
+             m.round_number, m.state, m.difficulty,
              m.problem_id, m.problem_version, m.problem_title, m.starts_at::text,
+             m.answer_deadline_at::text,
              m.finished_at::text, m.rematch_deadline::text,
              m.rematch_created_match_id, m.winner_user_id, m.end_reason,
              m.records_applied, m.version::text::bigint AS version
       FROM matches m
-      JOIN rooms r ON r.id = m.room_id
       WHERE m.id = ${matchId}
     `;
     if (!match || !clock)
@@ -916,7 +1045,11 @@ export class MatchEngine {
                THEN 'THINKING' ELSE mp.activity END AS activity,
              mp.best_passed_count,
              mp.hidden_test_count, mp.cooldown_until::text, mp.active_execution_id,
-             mp.connected, mp.disconnected_at::text, mp.reconnect_deadline::text, mp.outcome
+             mp.connected, mp.disconnected_at::text, mp.reconnect_deadline::text, mp.outcome,
+             (SELECT answer.submitted_at::text
+              FROM ai_ml_answers answer
+              WHERE answer.match_id = mp.match_id
+                AND answer.clerk_user_id = mp.clerk_user_id) AS submitted_at
       FROM match_participants mp
       JOIN profiles p ON p.clerk_user_id = mp.clerk_user_id
       WHERE mp.match_id = ${matchId}
@@ -940,10 +1073,27 @@ export class MatchEngine {
       WHERE rv.match_id = ${matchId}
       ORDER BY mp.slot
     `;
+    const [evaluation] =
+      match.challenge_type === "AI_ML"
+        ? await this.sql<
+            {
+              status:
+                "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | "SKIPPED";
+              retry_not_before: string | null;
+            }[]
+          >`
+            SELECT status, retry_not_before::text
+            FROM ai_ml_evaluations
+            WHERE match_id = ${matchId}
+          `
+        : [];
     const canRevealProblem =
-      match.state === "ACTIVE" || match.finished_at !== null;
+      match.state === "ACTIVE" ||
+      match.state === "JUDGING" ||
+      match.finished_at !== null;
     const problem: PublicProblemRef | null =
       canRevealProblem &&
+      match.challenge_type === "CODING" &&
       match.problem_id &&
       match.problem_version &&
       match.problem_title
@@ -954,9 +1104,31 @@ export class MatchEngine {
             difficulty: match.difficulty,
           }
         : null;
+    const selectedAiMlQuestion =
+      canRevealProblem &&
+      match.challenge_type === "AI_ML" &&
+      match.problem_id &&
+      match.problem_version
+        ? this.aiMlCatalog.get(match.problem_id, match.problem_version)
+        : null;
+    const aiMlQuestion = selectedAiMlQuestion
+      ? {
+          title: selectedAiMlQuestion.title,
+          prompt: selectedAiMlQuestion.prompt,
+          difficulty: selectedAiMlQuestion.difficulty,
+          category: selectedAiMlQuestion.category,
+          answerConstraints: selectedAiMlQuestion.answerConstraints,
+        }
+      : null;
+    const aiMlJudgeStatus: AiMlJudgeStatus = !evaluation
+      ? "IDLE"
+      : evaluation.status === "PENDING" || evaluation.status === "IN_PROGRESS"
+        ? "JUDGING"
+        : evaluation.status;
     return {
       roomId: match.room_id,
       matchId: match.id,
+      challengeType: match.challenge_type,
       mode: match.mode,
       roundNumber: match.round_number,
       difficulty: match.difficulty,
@@ -964,11 +1136,18 @@ export class MatchEngine {
       version: Number(match.version),
       serverTimestamp: clock.now,
       startsAt: asIso(match.starts_at),
+      answerDeadlineAt:
+        match.challenge_type === "AI_ML" && canRevealProblem
+          ? asIso(match.answer_deadline_at)
+          : null,
       finishedAt: asIso(match.finished_at),
       rematchDeadline: asIso(match.rematch_deadline),
       endReason: match.end_reason,
       winnerUsername: winner?.username ?? null,
       problem,
+      aiMlQuestion,
+      aiMlJudgeStatus,
+      aiMlRetryAt: asIso(evaluation?.retry_not_before ?? null),
       players: participants.map((player) => ({
         username: player.username,
         slot: player.slot,
@@ -976,11 +1155,23 @@ export class MatchEngine {
         language: player.language,
         ready: player.ready_at !== null,
         connected: player.connected,
-        activity: player.activity,
+        activity:
+          match.challenge_type === "AI_ML" &&
+          player.submitted_at !== null &&
+          match.state === "ACTIVE"
+            ? "SUBMITTED"
+            : player.activity,
         bestPassedCount: player.best_passed_count,
         hiddenTestCount: player.hidden_test_count,
         cooldownUntil: asIso(player.cooldown_until),
         outcome: player.outcome,
+        // Opponents receive only the coarse SUBMITTED activity. Exact
+        // submission timestamps are private until authorized result/history
+        // views and are not needed for realtime invalidation delivery.
+        submittedAt:
+          player.clerk_user_id === actorUserId
+            ? asIso(player.submitted_at)
+            : null,
       })),
       rematchVotes: votes.map((vote) => vote.slot),
       rematchCreatedMatchId: match.rematch_created_match_id,
@@ -1130,6 +1321,13 @@ export class MatchEngine {
         input.matchId,
         input.actorUserId,
       );
+      if (match.challenge_type !== "CODING") {
+        throw new DomainError(
+          "INVALID_CHALLENGE_TYPE",
+          "AI/ML Arena accepts prose answers instead of code executions",
+          409,
+        );
+      }
       const reservation = await this.reserveCommand(tx, {
         actorUserId: input.actorUserId,
         idempotencyKey: input.idempotencyKey,
@@ -1723,8 +1921,11 @@ export class MatchEngine {
       let createdMatchId: string | null = null;
       if (votes?.count === 2) {
         const [created] = await tx<{ id: string }[]>`
-          INSERT INTO matches (room_id, round_number, previous_match_id, difficulty)
-          VALUES (${match.room_id}, ${match.round_number + 1}, ${match.id}, ${match.difficulty})
+          INSERT INTO matches
+            (room_id, round_number, previous_match_id, difficulty, mode, challenge_type)
+          VALUES
+            (${match.room_id}, ${match.round_number + 1}, ${match.id},
+             ${match.difficulty}, ${match.mode}, ${match.challenge_type})
           ON CONFLICT (room_id, round_number) DO NOTHING
           RETURNING id
         `;
@@ -1749,6 +1950,8 @@ export class MatchEngine {
           });
           await this.appendEvent(tx, created.id, "MATCH_CREATED", {
             difficulty: match.difficulty,
+            mode: match.mode,
+            challengeType: match.challenge_type,
             roundNumber: match.round_number + 1,
             previousMatchId: match.id,
           });

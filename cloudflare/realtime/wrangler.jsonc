@@ -14,12 +14,19 @@
   ],
   "vars": {
     "APP_ORIGIN": "https://leetbattle.cenough.games",
+    // Deadline alarms can claim and recover AI/ML evaluations. Keep these
+    // identical to the web Worker; the API key remains a Wrangler secret.
+    "OPENAI_JUDGE_MODEL": "gpt-5.4-nano",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS": "1000",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER": "50",
+    "OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH": "6",
   },
   "secrets": {
     "required": [
       "REALTIME_TICKET_SECRET",
       "ROOM_INVITE_SECRET",
       "REALTIME_NOTIFY_SECRET",
+      "OPENAI_API_KEY",
     ],
   },
   "hyperdrive": [

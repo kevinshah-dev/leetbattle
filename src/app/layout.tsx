@@ -11,7 +11,7 @@ export const metadata: Metadata = {
     template: "%s · LeetBattle",
   },
   description:
-    "A private, real-time coding duel. Same problem, same clock, first accepted solution wins.",
+    "Private real-time coding battles and AI/ML Arena duels, with solo practice for both challenge types.",
   icons: { icon: "/icon.svg" },
 };
 

@@ -18,6 +18,7 @@ const createRoomInput = z
   .object({
     difficulty: z.enum(["EASY", "MEDIUM", "HARD"]),
     mode: z.enum(["DUEL", "PRACTICE"]).default("DUEL"),
+    challengeType: z.enum(["CODING", "AI_ML"]).default("CODING"),
     idempotencyKey: z.string().min(1).max(200),
   })
   .strict();

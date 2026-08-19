@@ -24,6 +24,45 @@ interface ExecutionViewRow {
   result_summary: Record<string, unknown> | null;
 }
 
+interface AiMlAnswerViewRow {
+  clerk_user_id: string;
+  username: string;
+  normalized_answer: string;
+  submitted_at: string;
+}
+
+interface AiMlEvaluationViewRow {
+  status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | "SKIPPED";
+  answer_a_user_id: string | null;
+  answer_b_user_id: string | null;
+  official_score_a: number | null;
+  official_score_b: number | null;
+  winner_user_id: string | null;
+  tie_break_reason: string | null;
+  explanation: string | null;
+  completion_classification: string | null;
+  retry_not_before: string | null;
+  failure_retryable: boolean;
+}
+
+export function canRetryAiMlEvaluation(input: {
+  status: AiMlEvaluationViewRow["status"] | undefined;
+  failureRetryable: boolean | undefined;
+  retryNotBefore: string | null | undefined;
+  serverTimestamp: string;
+}): boolean {
+  if (input.status !== "FAILED" || input.failureRetryable !== true)
+    return false;
+  if (!input.retryNotBefore) return true;
+  const retryAt = Date.parse(input.retryNotBefore);
+  const serverNow = Date.parse(input.serverTimestamp);
+  return (
+    Number.isFinite(retryAt) &&
+    Number.isFinite(serverNow) &&
+    retryAt <= serverNow
+  );
+}
+
 function playerActivity(
   player: PlayerSnapshot,
   state: MatchSnapshot["state"],
@@ -31,6 +70,7 @@ function playerActivity(
   if (!player.connected) return "DISCONNECTED";
   if (player.activity === "ACCEPTED" && state === "ACTIVE") return "VERIFYING";
   if (player.activity === "ACCEPTED") return "ACCEPTED";
+  if (player.activity === "SUBMITTED") return "SUBMITTED";
   if (player.activity === "COMPILING") return "COMPILING";
   if (player.activity === "JUDGING") return "JUDGING";
   if (player.activity === "COOLDOWN") return "COOLDOWN";
@@ -62,6 +102,7 @@ function eventMessage(
   event: MatchEvent,
   selfSlot: number,
   mode: MatchSnapshot["mode"],
+  challengeType: MatchSnapshot["challengeType"],
 ): Pick<ActivityEvent, "message" | "tone"> {
   const slot =
     typeof event.payload.slot === "number" ? event.payload.slot : null;
@@ -94,18 +135,57 @@ function eventMessage(
     case "COUNTDOWN_STARTED":
       return {
         message:
-          mode === "PRACTICE"
-            ? "Loadout locked. Problem reveal armed."
-            : "Both players are ready. Reveal synchronized.",
+          challengeType === "AI_ML"
+            ? "Answer stations locked. Question reveal armed."
+            : mode === "PRACTICE"
+              ? "Loadout locked. Problem reveal armed."
+              : "Both players are ready. Reveal synchronized.",
         tone: "SUCCESS",
       };
     case "MATCH_ACTIVE":
       return {
         message:
-          mode === "PRACTICE"
-            ? "GO! The practice problem is now live."
-            : "FIGHT! The problem is now live.",
+          challengeType === "AI_ML"
+            ? "GO! The AI/ML question is now live."
+            : mode === "PRACTICE"
+              ? "GO! The practice problem is now live."
+              : "FIGHT! The problem is now live.",
         tone: "SUCCESS",
+      };
+    case "AI_ML_ANSWER_SUBMITTED":
+      return {
+        message: self
+          ? "Your final answer is locked."
+          : "Your rival submitted.",
+        tone: self ? "SELF" : "OPPONENT",
+      };
+    case "AI_ML_ANSWER_TIMED_OUT":
+      return {
+        message: self
+          ? "Your answer window closed without a submission."
+          : "Your rival did not submit before the deadline.",
+        tone: self ? "DANGER" : "OPPONENT",
+      };
+    case "AI_ML_JUDGING_STARTED":
+      return {
+        message: "Answers are locked. Rubric judging is underway.",
+        tone: "NEUTRAL",
+      };
+    case "AI_ML_JUDGMENT_COMPLETED":
+      return {
+        message: "The AI/ML judgment is complete.",
+        tone: "SUCCESS",
+      };
+    case "AI_ML_JUDGE_FAILED":
+      return {
+        message:
+          "Judging is temporarily unavailable. The answers remain locked.",
+        tone: "DANGER",
+      };
+    case "AI_ML_AUTOMATIC_RESOLUTION":
+      return {
+        message: "The server resolved the round without calling the judge.",
+        tone: "NEUTRAL",
       };
     case "EXECUTION_STARTED":
       return {
@@ -179,11 +259,12 @@ function activityFeed(
   events: readonly MatchEvent[],
   selfSlot: number,
   mode: MatchSnapshot["mode"],
+  challengeType: MatchSnapshot["challengeType"],
 ): ActivityEvent[] {
   return events.map((event) => ({
     id: `${event.matchId}:${event.version}`,
     serverTimestamp: event.serverTimestamp,
-    ...eventMessage(event, selfSlot, mode),
+    ...eventMessage(event, selfSlot, mode, challengeType),
   }));
 }
 
@@ -344,16 +425,40 @@ export async function presentRoomSnapshot(input: {
   let snapshot = input.snapshot;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const eventFloor = Math.max(0, snapshot.version - 40);
-    const [executions, events] = await Promise.all([
-      db<ExecutionViewRow[]>`
+    const [executions, events, aiMlAnswers, aiMlEvaluation] = await Promise.all(
+      [
+        db<ExecutionViewRow[]>`
         SELECT kind, status, verdict, result_summary
         FROM executions
         WHERE match_id = ${snapshot.matchId} AND clerk_user_id = ${actorUserId}
         ORDER BY server_sequence DESC
         LIMIT 20
       `,
-      matches.eventsSince(actorUserId, snapshot.matchId, eventFloor, 50),
-    ]);
+        matches.eventsSince(actorUserId, snapshot.matchId, eventFloor, 50),
+        snapshot.challengeType === "AI_ML"
+          ? db<AiMlAnswerViewRow[]>`
+            SELECT answer.clerk_user_id, profile.username::text AS username,
+                   answer.normalized_answer, answer.submitted_at::text
+            FROM ai_ml_answers answer
+            JOIN profiles profile ON profile.clerk_user_id = answer.clerk_user_id
+            WHERE answer.match_id = ${snapshot.matchId}
+            ORDER BY answer.submitted_at, answer.clerk_user_id
+          `
+          : Promise.resolve([]),
+        snapshot.challengeType === "AI_ML"
+          ? db<AiMlEvaluationViewRow[]>`
+            SELECT status, answer_a_user_id, answer_b_user_id,
+                   official_score_a, official_score_b, winner_user_id,
+                   tie_break_reason, explanation, completion_classification,
+                   retry_not_before::text,
+                   COALESCE(failure_metadata->>'retryable' = 'true', false)
+                     AS failure_retryable
+            FROM ai_ml_evaluations
+            WHERE match_id = ${snapshot.matchId}
+          `
+          : Promise.resolve([]),
+      ],
+    );
     const verified = await matches.getSnapshot(actorUserId, snapshot.roomId);
     if (
       verified.matchId !== snapshot.matchId ||
@@ -373,6 +478,41 @@ export async function presentRoomSnapshot(input: {
       (execution) => execution.kind === "SUBMIT",
     );
     const latestExecution = executions[0];
+    const selfAnswer = aiMlAnswers.find(
+      (answer) => answer.clerk_user_id === actorUserId,
+    );
+    const opponentAnswer = aiMlAnswers.find(
+      (answer) => answer.clerk_user_id !== actorUserId,
+    );
+    const evaluation = aiMlEvaluation[0];
+    const finalizedAiMl =
+      evaluation?.status === "COMPLETED" || evaluation?.status === "SKIPPED";
+    const scoreFor = (userId: string): number => {
+      if (evaluation?.answer_a_user_id === userId)
+        return evaluation.official_score_a ?? 0;
+      if (evaluation?.answer_b_user_id === userId)
+        return evaluation.official_score_b ?? 0;
+      return 0;
+    };
+    const aiMlResult =
+      finalizedAiMl && verified.aiMlQuestion
+        ? {
+            answers: aiMlAnswers.map((answer) => ({
+              username: answer.username,
+              answer: answer.normalized_answer,
+              score: scoreFor(answer.clerk_user_id),
+            })),
+            winnerUsername:
+              aiMlAnswers.find(
+                (answer) => answer.clerk_user_id === evaluation.winner_user_id,
+              )?.username ?? null,
+            explanation: evaluation.explanation,
+            tieBreakReason: evaluation.tie_break_reason,
+            automaticBlank:
+              evaluation.completion_classification === "blank_forfeit" ||
+              evaluation.status === "SKIPPED",
+          }
+        : null;
     const appOrigin = input.appOrigin.replace(/\/$/, "");
     return {
       roomCode: inviteToken,
@@ -380,6 +520,7 @@ export async function presentRoomSnapshot(input: {
         ? { inviteUrl: `${appOrigin}/join/${encodeURIComponent(inviteToken)}` }
         : {}),
       matchId: verified.matchId,
+      challengeType: verified.challengeType,
       mode: verified.mode,
       roundNumber: verified.roundNumber,
       version: verified.version,
@@ -387,6 +528,7 @@ export async function presentRoomSnapshot(input: {
       state: verified.state,
       difficulty: verified.difficulty,
       startsAt: verified.startsAt,
+      answerDeadlineAt: verified.answerDeadlineAt,
       finishedAt: verified.finishedAt,
       rematchDeadline: verified.rematchDeadline,
       self: playerHud(self, verified.state, verified.rematchVotes),
@@ -394,7 +536,33 @@ export async function presentRoomSnapshot(input: {
         ? playerHud(opponent, verified.state, verified.rematchVotes)
         : null,
       problem: verified.problem ? presentProblem(verified.problem) : null,
-      activity: activityFeed(events, self.slot, verified.mode),
+      aiMl:
+        verified.challengeType === "AI_ML" && verified.aiMlQuestion
+          ? {
+              question: verified.aiMlQuestion,
+              selfSubmission: {
+                submitted: Boolean(selfAnswer),
+                submittedAt: selfAnswer?.submitted_at ?? null,
+                answer: selfAnswer?.normalized_answer ?? null,
+              },
+              opponentSubmitted: Boolean(opponentAnswer),
+              judgeStatus: verified.aiMlJudgeStatus,
+              retryAt: evaluation?.retry_not_before ?? verified.aiMlRetryAt,
+              canRetry: canRetryAiMlEvaluation({
+                status: evaluation?.status,
+                failureRetryable: evaluation?.failure_retryable,
+                retryNotBefore: evaluation?.retry_not_before,
+                serverTimestamp: verified.serverTimestamp,
+              }),
+              result: aiMlResult,
+            }
+          : null,
+      activity: activityFeed(
+        events,
+        self.slot,
+        verified.mode,
+        verified.challengeType,
+      ),
       latestExecution: latestExecution
         ? {
             kind: latestExecution.kind,

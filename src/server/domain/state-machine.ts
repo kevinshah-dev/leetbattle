@@ -5,7 +5,8 @@ import { DomainError } from "./errors";
 const transitions: Readonly<Record<MatchState, readonly MatchState[]>> = {
   LOBBY: ["COUNTDOWN", "FINISHED"],
   COUNTDOWN: ["ACTIVE", "FINISHED"],
-  ACTIVE: ["FINISHED"],
+  ACTIVE: ["JUDGING", "FINISHED"],
+  JUDGING: ["FINISHED"],
   FINISHED: ["REMATCH_PENDING"],
   REMATCH_PENDING: [],
 };
@@ -25,7 +26,12 @@ export function assertTransition(from: MatchState, to: MatchState): void {
 }
 
 export function shouldApplyRecord(endReason: string): boolean {
-  return endReason === "ACCEPTED" || endReason === "FORFEIT";
+  return (
+    endReason === "ACCEPTED" ||
+    endReason === "FORFEIT" ||
+    endReason === "JUDGED" ||
+    endReason === "ANSWER_TIMEOUT"
+  );
 }
 
 /** Earlier receipt always wins; runtime is considered only for equal timestamps. */

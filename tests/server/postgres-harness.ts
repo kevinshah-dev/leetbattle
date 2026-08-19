@@ -46,7 +46,7 @@ export async function createPostgresHarness(
     sql,
     async reset() {
       await sql.unsafe(
-        "TRUNCATE TABLE profiles, problem_registry RESTART IDENTITY CASCADE; ALTER SEQUENCE execution_server_sequence RESTART WITH 1",
+        "TRUNCATE TABLE ai_ml_judge_request_reservations, profiles, problem_registry RESTART IDENTITY CASCADE; ALTER SEQUENCE execution_server_sequence RESTART WITH 1",
       );
     },
     async close() {

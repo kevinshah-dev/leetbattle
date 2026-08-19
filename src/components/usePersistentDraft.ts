@@ -2,21 +2,23 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { Language } from "./api-client";
-
 export function usePersistentDraft(
   roomCode: string,
   draftScope: string,
-  language: Language,
-  starterCode: string,
+  draftKind: string,
+  initialValue: string,
 ) {
-  const storageKey = `leetbattle:draft:${roomCode}:${draftScope}:${language}`;
+  const storageKey = `leetbattle:draft:${roomCode}:${draftScope}:${draftKind}`;
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const storedSource =
-    typeof window === "undefined"
-      ? null
-      : window.localStorage.getItem(storageKey);
-  const source = drafts[storageKey] ?? storedSource ?? starterCode;
+  let storedSource: string | null = null;
+  if (typeof window !== "undefined") {
+    try {
+      storedSource = window.localStorage.getItem(storageKey);
+    } catch {
+      // Draft persistence is best effort in storage-restricted browsers.
+    }
+  }
+  const source = drafts[storageKey] ?? storedSource ?? initialValue;
   const setSource = useCallback(
     (next: string) =>
       setDrafts((current) => ({ ...current, [storageKey]: next })),
@@ -24,10 +26,13 @@ export function usePersistentDraft(
   );
 
   useEffect(() => {
-    const timer = window.setTimeout(
-      () => window.localStorage.setItem(storageKey, source),
-      180,
-    );
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(storageKey, source);
+      } catch {
+        // Keep the in-memory draft usable when local storage is unavailable.
+      }
+    }, 180);
     return () => window.clearTimeout(timer);
   }, [source, storageKey]);
 

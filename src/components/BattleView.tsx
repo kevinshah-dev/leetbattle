@@ -10,6 +10,7 @@ import {
   type RoomSnapshot,
 } from "./api-client";
 import { ArcadeButton, ArcadeLink, StatusLamp } from "./ArcadePrimitives";
+import { AiMlBattleWorkspace } from "./AiMlBattleWorkspace";
 import { BattleStrip } from "./BattleStrip";
 import { BrandMark } from "./BrandMark";
 import { ClerkAuthControls } from "./ClerkAuthControls";
@@ -640,6 +641,7 @@ function BattleWorkspace({
       </header>
 
       <BattleStrip
+        challengeType={snapshot.challengeType}
         centerLabel={centerLabel}
         mode={snapshot.mode}
         opponent={snapshot.opponent}
@@ -768,5 +770,13 @@ export function BattleView({ roomCode }: { roomCode: string }) {
       <RoomLoading />
     );
   if (session.error) return <RoomError message={session.error} />;
+  if (session.snapshot.challengeType === "AI_ML")
+    return (
+      <AiMlBattleWorkspace
+        {...session}
+        key={session.snapshot.matchId}
+        snapshot={session.snapshot}
+      />
+    );
   return <BattleWorkspace {...session} snapshot={session.snapshot} />;
 }

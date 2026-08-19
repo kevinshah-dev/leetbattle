@@ -1,10 +1,12 @@
 export type Difficulty = "EASY" | "MEDIUM" | "HARD";
 export type Language = "PYTHON" | "JAVA";
 export type MatchMode = "DUEL" | "PRACTICE";
+export type ChallengeType = "CODING" | "AI_ML";
 export type MatchState =
   | "LOBBY"
   | "COUNTDOWN"
   | "ACTIVE"
+  | "JUDGING"
   | "FINISHED"
   | "REMATCH_PENDING"
   | "CANCELLED"
@@ -13,6 +15,7 @@ export type PlayerActivity =
   | "WAITING"
   | "READY"
   | "THINKING"
+  | "SUBMITTED"
   | "COMPILING"
   | "JUDGING"
   | "COOLDOWN"
@@ -58,6 +61,54 @@ export interface PublicProblem {
   };
 }
 
+export interface AiMlAnswerConstraints {
+  maxWords: number;
+  maxCharacters: number;
+  maxUtf8Bytes: number;
+}
+
+export interface PublicAiMlQuestion {
+  title: string;
+  prompt: string;
+  difficulty: Difficulty;
+  category: string;
+  answerConstraints: AiMlAnswerConstraints;
+}
+
+export interface AiMlScoredAnswer {
+  username: string;
+  answer: string;
+  score: number;
+}
+
+export interface HistoryAiMlAnswer {
+  username: string;
+  answer: string;
+  score: number | null;
+}
+
+export interface AiMlResult {
+  answers: AiMlScoredAnswer[];
+  winnerUsername: string | null;
+  explanation: string | null;
+  tieBreakReason: string | null;
+  automaticBlank: boolean;
+}
+
+export interface AiMlRoomView {
+  question: PublicAiMlQuestion;
+  selfSubmission: {
+    submitted: boolean;
+    submittedAt: string | null;
+    answer: string | null;
+  };
+  opponentSubmitted: boolean;
+  judgeStatus: "IDLE" | "JUDGING" | "FAILED" | "COMPLETED" | "SKIPPED";
+  retryAt: string | null;
+  canRetry: boolean;
+  result: AiMlResult | null;
+}
+
 export interface ActivityEvent {
   id: string;
   serverTimestamp: string;
@@ -91,7 +142,15 @@ export interface SubmissionSummary {
 
 export interface MatchResult {
   outcome: "WIN" | "LOSS" | "DRAW" | "CANCELLED" | "NO_CONTEST";
-  endReason: "ACCEPTED" | "FORFEIT" | "CANCELLED" | "DISCONNECT" | "NO_CONTEST";
+  endReason:
+    | "ACCEPTED"
+    | "JUDGED"
+    | "ANSWER_TIMEOUT"
+    | "JUDGE_FAILED"
+    | "FORFEIT"
+    | "CANCELLED"
+    | "DISCONNECT"
+    | "NO_CONTEST";
   winnerUsername: string | null;
   durationMs: number;
 }
@@ -99,6 +158,7 @@ export interface MatchResult {
 export interface RoomSnapshot {
   matchId: string;
   mode: MatchMode;
+  challengeType: ChallengeType;
   roundNumber: number;
   roomCode: string;
   inviteUrl?: string;
@@ -107,11 +167,13 @@ export interface RoomSnapshot {
   state: MatchState;
   difficulty: Difficulty;
   startsAt: string | null;
+  answerDeadlineAt: string | null;
   finishedAt: string | null;
   rematchDeadline: string | null;
   self: PlayerHud;
   opponent: PlayerHud | null;
   problem: PublicProblem | null;
+  aiMl: AiMlRoomView | null;
   activity: ActivityEvent[];
   latestExecution: {
     kind: "RUN" | "SUBMIT";
@@ -133,17 +195,45 @@ export interface PlayerProfile {
   createdAt?: string;
 }
 
+export type MatchHistoryOutcome =
+  "WIN" | "LOSS" | "DRAW" | "NO_CONTEST" | "CANCELLED" | "COMPLETED";
+
 export interface MatchHistoryItem {
   id: string;
   roomCode: string;
   playedAt: string;
-  opponentUsername: string;
+  challengeType: ChallengeType;
+  mode: MatchMode;
+  opponentUsername: string | null;
   problemTitle: string;
   difficulty: Difficulty;
-  language: Language;
-  outcome: "WIN" | "LOSS" | "DRAW" | "NO_CONTEST";
+  language: Language | null;
+  outcome: MatchHistoryOutcome;
+  score?: number | null;
   durationMs: number;
   endReason: string;
+}
+
+export interface MatchHistoryDetail {
+  id: string;
+  challengeType: ChallengeType;
+  mode: MatchMode;
+  playedAt: string;
+  difficulty: Difficulty;
+  opponentUsername: string | null;
+  problemTitle: string;
+  language: Language | null;
+  outcome: MatchHistoryOutcome;
+  endReason: string;
+  durationMs: number;
+  aiMl: {
+    question: PublicAiMlQuestion;
+    answers: HistoryAiMlAnswer[];
+    winnerUsername: string | null;
+    explanation: string | null;
+    tieBreakReason: string | null;
+    automaticBlank: boolean;
+  } | null;
 }
 
 export type RoomCommand =
@@ -151,6 +241,8 @@ export type RoomCommand =
   | { type: "SET_READY"; payload: { ready: boolean } }
   | { type: "RUN_SAMPLES"; payload: { language: Language; source: string } }
   | { type: "SUBMIT"; payload: { language: Language; source: string } }
+  | { type: "SUBMIT_AI_ML_ANSWER"; payload: { answer: string } }
+  | { type: "RETRY_AI_ML_JUDGING"; payload: Record<string, never> }
   | { type: "REMATCH_VOTE"; payload: { vote: boolean } }
   | { type: "FORFEIT"; payload: Record<string, never> }
   | { type: "CANCEL"; payload: Record<string, never> };
@@ -209,7 +301,15 @@ export function saveProfile(username: string) {
   });
 }
 
-export function createRoom(difficulty: Difficulty, mode: MatchMode = "DUEL") {
+export function createRoom({
+  challengeType = "CODING",
+  difficulty,
+  mode = "DUEL",
+}: {
+  challengeType?: ChallengeType;
+  difficulty: Difficulty;
+  mode?: MatchMode;
+}) {
   return request<{
     roomCode: string;
     inviteUrl?: string;
@@ -219,6 +319,7 @@ export function createRoom(difficulty: Difficulty, mode: MatchMode = "DUEL") {
     body: JSON.stringify({
       difficulty,
       mode,
+      challengeType,
       idempotencyKey: crypto.randomUUID(),
     }),
   });
@@ -243,13 +344,14 @@ export function sendRoomCommand(
   matchId: string,
   expectedVersion: number,
   command: RoomCommand,
+  idempotencyKey = crypto.randomUUID(),
 ) {
   return request<{ accepted: true; version: number; snapshot?: RoomSnapshot }>(
     `/api/rooms/${encodeURIComponent(roomCode)}/commands`,
     {
       method: "POST",
       body: JSON.stringify({
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         matchId,
         expectedVersion,
         ...command,
@@ -261,6 +363,13 @@ export function sendRoomCommand(
 export function getHistory(signal?: AbortSignal) {
   return request<{ profile: PlayerProfile; matches: MatchHistoryItem[] }>(
     "/api/history",
+    { signal },
+  );
+}
+
+export function getHistoryDetail(matchId: string, signal?: AbortSignal) {
+  return request<{ match: MatchHistoryDetail }>(
+    `/api/history/${encodeURIComponent(matchId)}`,
     { signal },
   );
 }

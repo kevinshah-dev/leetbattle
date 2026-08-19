@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   sendRoomCommand,
+  type ChallengeType,
   type Language,
   type PlayerHud,
 } from "./api-client";
@@ -20,9 +21,11 @@ import { RoomError, RoomLoading } from "./RoomState";
 import { useRoomSession } from "./useRoomSession";
 
 function PlayerSlot({
+  challengeType,
   player,
   self = false,
 }: {
+  challengeType: ChallengeType;
   player: PlayerHud | null;
   self?: boolean;
 }) {
@@ -58,21 +61,27 @@ function PlayerSlot({
           <small>
             {player
               ? player.ready
-                ? "Loadout locked"
-                : "Choosing loadout"
+                ? challengeType === "AI_ML"
+                  ? "Ready for question reveal"
+                  : "Loadout locked"
+                : challengeType === "AI_ML"
+                  ? "Reviewing arena rules"
+                  : "Choosing loadout"
               : "Share the invite to fill this seat"}
           </small>
         </div>
       </div>
       <dl>
         <div>
-          <dt>Language</dt>
+          <dt>{challengeType === "AI_ML" ? "Challenge" : "Language"}</dt>
           <dd>
-            {player?.language === "PYTHON"
-              ? "Python"
-              : player?.language === "JAVA"
-                ? "Java"
-                : "Not selected"}
+            {challengeType === "AI_ML"
+              ? "AI/ML Arena"
+              : player?.language === "PYTHON"
+                ? "Python"
+                : player?.language === "JAVA"
+                  ? "Java"
+                  : "Not selected"}
           </dd>
         </div>
         <div>
@@ -84,7 +93,7 @@ function PlayerSlot({
   );
 }
 
-function PracticeObjective() {
+function PracticeObjective({ aiMl }: { aiMl: boolean }) {
   return (
     <div className="practice-objective">
       <p className="eyebrow">Solo objective</p>
@@ -93,10 +102,11 @@ function PracticeObjective() {
         <i />
         <span>&gt;_</span>
       </div>
-      <h2>Clear the hidden suite.</h2>
+      <h2>{aiMl ? "Build a complete answer." : "Clear the hidden suite."}</h2>
       <p>
-        There is no race against a rival. Submit when your solution is ready;
-        every hidden test must pass.
+        {aiMl
+          ? "There is no rival. Submit one final prose answer and receive a score against the same private rubric used in duels."
+          : "There is no race against a rival. Submit when your solution is ready; every hidden test must pass."}
       </p>
       <small>Wins and losses stay unchanged.</small>
     </div>
@@ -131,6 +141,7 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
   if (error) return <RoomError message={error} />;
   const currentSnapshot = snapshot;
   const practice = snapshot.mode === "PRACTICE";
+  const aiMl = snapshot.challengeType === "AI_ML";
 
   async function command(
     type: "SELECT_LANGUAGE" | "SET_READY",
@@ -208,6 +219,9 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
           <span>{practice ? "MODE" : "ROOM"}</span>
           <strong>{practice ? "PRACTICE" : snapshot.roomCode}</strong>
         </div>
+        <span className="room-toolbar__challenge">
+          {aiMl ? "AI/ML ARENA" : "CODING"}
+        </span>
         {practice ? (
           <div className="room-toolbar__practice">
             <span>SOLO SESSION</span>
@@ -235,6 +249,7 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
       </header>
 
       <BattleStrip
+        challengeType={snapshot.challengeType}
         centerLabel={practice ? "SOLO" : "STANDBY"}
         mode={snapshot.mode}
         opponent={snapshot.opponent}
@@ -248,26 +263,43 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
           className={`lobby-roster${practice ? " lobby-roster--practice" : ""}`}
           aria-label={practice ? "Practice setup" : "Players"}
         >
-          <PlayerSlot player={snapshot.self} self />
+          <PlayerSlot
+            challengeType={snapshot.challengeType}
+            player={snapshot.self}
+            self
+          />
           {practice ? (
-            <PracticeObjective />
+            <PracticeObjective aiMl={aiMl} />
           ) : (
             <>
               <div className="versus-divider" aria-hidden="true">
                 <span>VS</span>
               </div>
-              <PlayerSlot player={snapshot.opponent} />
+              <PlayerSlot
+                challengeType={snapshot.challengeType}
+                player={snapshot.opponent}
+              />
             </>
           )}
         </section>
 
         <PixelPanel
           className="loadout-panel"
-          label={practice ? "PRACTICE LOADOUT" : "YOUR LOADOUT"}
+          label={
+            aiMl
+              ? practice
+                ? "ARENA PRACTICE"
+                : "ARENA CHECK-IN"
+              : practice
+                ? "PRACTICE LOADOUT"
+                : "YOUR LOADOUT"
+          }
         >
           <div className="loadout-panel__header">
             <div>
-              <p className="eyebrow">Difficulty locked</p>
+              <p className="eyebrow">
+                {aiMl ? "AI/ML Arena · difficulty locked" : "Difficulty locked"}
+              </p>
               <h1>
                 {snapshot.difficulty[0] +
                   snapshot.difficulty.slice(1).toLowerCase()}
@@ -279,32 +311,53 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
               {snapshot.difficulty}
             </span>
           </div>
-          <fieldset disabled={pending || snapshot.self.ready}>
-            <legend>Choose a language</legend>
-            <div className="language-switch">
-              {(["PYTHON", "JAVA"] as Language[]).map((language) => (
-                <button
-                  aria-pressed={snapshot.self.language === language}
-                  key={language}
-                  onClick={() => void command("SELECT_LANGUAGE", { language })}
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className={`language-glyph language-glyph--${language.toLowerCase()}`}
-                  >
-                    {language === "PYTHON" ? "py" : "{}"}
-                  </span>
-                  <span>
-                    <strong>{language === "PYTHON" ? "Python" : "Java"}</strong>
-                    <small>
-                      {language === "PYTHON" ? "Python 3" : "Java LTS"}
-                    </small>
-                  </span>
-                </button>
-              ))}
+          {aiMl ? (
+            <div aria-label="AI/ML Arena rules" className="arena-briefing">
+              <div>
+                <strong>10:00</strong>
+                <span>Server-timed round</span>
+              </div>
+              <div>
+                <strong>500</strong>
+                <span>Maximum words</span>
+              </div>
+              <div>
+                <strong>1×</strong>
+                <span>Immutable final answer</span>
+              </div>
             </div>
-          </fieldset>
+          ) : (
+            <fieldset disabled={pending || snapshot.self.ready}>
+              <legend>Choose a language</legend>
+              <div className="language-switch">
+                {(["PYTHON", "JAVA"] as Language[]).map((language) => (
+                  <button
+                    aria-pressed={snapshot.self.language === language}
+                    key={language}
+                    onClick={() =>
+                      void command("SELECT_LANGUAGE", { language })
+                    }
+                    type="button"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`language-glyph language-glyph--${language.toLowerCase()}`}
+                    >
+                      {language === "PYTHON" ? "py" : "{}"}
+                    </span>
+                    <span>
+                      <strong>
+                        {language === "PYTHON" ? "Python" : "Java"}
+                      </strong>
+                      <small>
+                        {language === "PYTHON" ? "Python 3" : "Java LTS"}
+                      </small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          )}
           <div className="ready-row">
             <div>
               <StatusLamp
@@ -330,14 +383,20 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
                 }
               />
               <p>
-                {practice
-                  ? "The server selects and seals one problem when you start."
-                  : "The server selects and seals one problem after both players lock in."}
+                {aiMl
+                  ? practice
+                    ? "The server reveals one sealed question when you start."
+                    : "The question remains sealed until both players are ready."
+                  : practice
+                    ? "The server selects and seals one problem when you start."
+                    : "The server selects and seals one problem after both players lock in."}
               </p>
             </div>
             <ArcadeButton
               disabled={
-                pending || !snapshot.self.language || realtime !== "LIVE"
+                pending ||
+                (!aiMl && !snapshot.self.language) ||
+                realtime !== "LIVE"
               }
               onClick={() =>
                 void command("SET_READY", { ready: !snapshot.self.ready })
@@ -347,9 +406,13 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
               {realtime !== "LIVE"
                 ? "Linking live session…"
                 : snapshot.self.ready
-                  ? "Unlock loadout"
+                  ? aiMl
+                    ? "Cancel ready"
+                    : "Unlock loadout"
                   : practice
-                    ? "Start practice"
+                    ? aiMl
+                      ? "Start arena"
+                      : "Start practice"
                     : "Ready up"}
             </ArcadeButton>
           </div>
@@ -376,7 +439,9 @@ export function LobbyView({ roomCode }: { roomCode: string }) {
           <kbd>Tab</kbd> moves controls <span />
           {practice
             ? " Practice does not change your record"
-            : " Both players choose independently"}
+            : aiMl
+              ? " Answers stay private until the result"
+              : " Both players choose independently"}
         </p>
       </footer>
     </main>

@@ -1,12 +1,29 @@
-import type { MatchMode, MatchState, PlayerHud } from "./api-client";
+import type {
+  ChallengeType,
+  MatchMode,
+  MatchState,
+  PlayerHud,
+} from "./api-client";
 
-function activityLabel(player: PlayerHud | null) {
+function activityLabel(player: PlayerHud | null, challengeType: ChallengeType) {
   if (!player) return "Waiting for challenger";
   if (!player.connected) return "Disconnected";
+  if (challengeType === "AI_ML") {
+    if (
+      player.activity === "SUBMITTED" ||
+      player.activity === "JUDGING" ||
+      player.activity === "VERIFYING" ||
+      player.activity === "ACCEPTED"
+    )
+      return "Answer submitted";
+    if (player.activity === "READY") return "Ready";
+    return "Thinking";
+  }
   const labels: Record<PlayerHud["activity"], string> = {
     WAITING: "Thinking",
     READY: "Ready",
     THINKING: "Thinking",
+    SUBMITTED: "Answer submitted",
     COMPILING: "Compiling",
     JUDGING: "Judging hidden tests",
     COOLDOWN: "Cooling down",
@@ -15,6 +32,32 @@ function activityLabel(player: PlayerHud | null) {
     DISCONNECTED: "Disconnected",
   };
   return labels[player.activity];
+}
+
+function ArenaStatusRail({ player }: { player: PlayerHud | null }) {
+  const submitted =
+    player?.activity === "SUBMITTED" ||
+    player?.activity === "JUDGING" ||
+    player?.activity === "VERIFYING" ||
+    player?.activity === "ACCEPTED";
+  return (
+    <div
+      aria-label={
+        player
+          ? submitted
+            ? `${player.username} submitted a final answer`
+            : `${player.username} is still thinking`
+          : "No challenger answer status"
+      }
+      className={`arena-status-rail${submitted ? " arena-status-rail--submitted" : ""}`}
+      role="status"
+    >
+      <i />
+      <i />
+      <i />
+      <span>{submitted ? "SUBMITTED" : "THINKING"}</span>
+    </div>
+  );
 }
 
 function ProgressRail({
@@ -92,6 +135,7 @@ function PracticeTarget() {
 }
 
 export function BattleStrip({
+  challengeType = "CODING",
   centerLabel,
   mode,
   opponent,
@@ -99,6 +143,7 @@ export function BattleStrip({
   state,
   timer,
 }: {
+  challengeType?: ChallengeType;
   centerLabel?: string;
   mode: MatchMode;
   opponent: PlayerHud | null;
@@ -109,19 +154,29 @@ export function BattleStrip({
   return (
     <section
       aria-label={
-        mode === "PRACTICE" ? "Practice status" : "Live battle status"
+        mode === "PRACTICE"
+          ? challengeType === "AI_ML"
+            ? "AI/ML Arena practice status"
+            : "Practice status"
+          : challengeType === "AI_ML"
+            ? "AI/ML Arena battle status"
+            : "Live battle status"
       }
-      className={`battle-strip battle-strip--${state.toLowerCase()}${mode === "PRACTICE" ? " battle-strip--practice" : ""}`}
+      className={`battle-strip battle-strip--${state.toLowerCase()}${mode === "PRACTICE" ? " battle-strip--practice" : ""}${challengeType === "AI_ML" ? " battle-strip--arena" : ""}`}
     >
       <div className="player-hud player-hud--self">
         <div className="player-hud__line">
           <strong>{self.username}</strong>
           <span>P1 · YOU</span>
         </div>
-        <ProgressRail player={self} />
+        {challengeType === "AI_ML" ? (
+          <ArenaStatusRail player={self} />
+        ) : (
+          <ProgressRail player={self} />
+        )}
         <div className="player-hud__status">
           <span className={self.connected ? "is-online" : ""} />
-          {activityLabel(self)}
+          {activityLabel(self, challengeType)}
         </div>
       </div>
       <div className="battle-strip__pit" aria-hidden="true">
@@ -158,15 +213,37 @@ export function BattleStrip({
       {mode === "PRACTICE" ? (
         <div className="player-hud player-hud--opponent player-hud--practice">
           <div className="player-hud__line">
-            <strong>HIDDEN SUITE</strong>
+            <strong>
+              {challengeType === "AI_ML" ? "PRIVATE RUBRIC" : "HIDDEN SUITE"}
+            </strong>
             <span>SOLO GOAL</span>
           </div>
-          <div aria-hidden="true" className="practice-test-rail">
-            {Array.from({ length: 10 }, (_, index) => (
-              <i key={index} />
-            ))}
+          {challengeType === "AI_ML" ? (
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={100}
+              className="arena-rubric-rail"
+              role="meter"
+            >
+              <i />
+              <i />
+              <i />
+              <i />
+              <span>100 PTS</span>
+            </div>
+          ) : (
+            <div aria-hidden="true" className="practice-test-rail">
+              {Array.from({ length: 10 }, (_, index) => (
+                <i key={index} />
+              ))}
+            </div>
+          )}
+          <div className="player-hud__status">
+            {challengeType === "AI_ML"
+              ? "Scored against the same duel rubric"
+              : "Pass every test to finish"}
           </div>
-          <div className="player-hud__status">Pass every test to finish</div>
         </div>
       ) : (
         <div className="player-hud player-hud--opponent">
@@ -174,10 +251,14 @@ export function BattleStrip({
             <strong>{opponent?.username || "OPEN SLOT"}</strong>
             <span>P2 · RIVAL</span>
           </div>
-          <ProgressRail player={opponent} reverse />
+          {challengeType === "AI_ML" ? (
+            <ArenaStatusRail player={opponent} />
+          ) : (
+            <ProgressRail player={opponent} reverse />
+          )}
           <div className="player-hud__status">
             <span className={opponent?.connected ? "is-online" : ""} />
-            {activityLabel(opponent)}
+            {activityLabel(opponent, challengeType)}
           </div>
         </div>
       )}

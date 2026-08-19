@@ -3,3 +3,11 @@
 REALTIME_TICKET_SECRET=replace_with_at_least_32_random_bytes
 ROOM_INVITE_SECRET=replace_with_a_third_32_byte_secret
 REALTIME_NOTIFY_SECRET=replace_with_a_fourth_32_byte_secret
+
+# RoomHub alarms can claim deadline-triggered evaluations, so this Worker is a
+# judging runtime. Use a development key here; never copy it to the runner.
+OPENAI_API_KEY=replace_with_openai_api_key
+OPENAI_JUDGE_MODEL=gpt-5.4-nano
+OPENAI_JUDGE_MAX_DAILY_REQUESTS=1000
+OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_USER=50
+OPENAI_JUDGE_MAX_DAILY_REQUESTS_PER_MATCH=6
