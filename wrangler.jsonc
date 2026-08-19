@@ -22,7 +22,7 @@
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE_FRESH",
-      "id": "929f4511e5e448c7bf044e662fb52a9b",
+      "id": "b635949fd4b44561989764b01b9a7ad7",
       "localConnectionString": "postgresql://leetbattle:leetbattle@127.0.0.1:5432/leetbattle",
     },
   ],
